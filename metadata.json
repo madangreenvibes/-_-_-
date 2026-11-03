@@ -1,0 +1,6 @@
+{
+  "name": "SetoPress NPL Plugin Studio",
+  "description": "WordPress plugin debugger, live shortcode simulator, and fixed PHP snippet generator for the Nepal Premier League Manager.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

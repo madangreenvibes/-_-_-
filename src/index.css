@@ -1,0 +1,64 @@
+@import "tailwindcss";
+
+@layer base {
+  :root {
+    color-scheme: light;
+  }
+
+  input:not([type="checkbox"]):not([type="radio"]):not([type="color"]):not([type="range"]),
+  select,
+  textarea {
+    background-color: #ffffff;
+    color: #0f172a;
+    pointer-events: auto;
+    user-select: text;
+    -webkit-user-select: text;
+  }
+
+  textarea[readonly] {
+    background-color: #020617;
+    color: #d1fae5;
+  }
+
+  input:not([type="checkbox"]):not([type="radio"]):not([type="color"]):focus,
+  select:focus,
+  textarea:not([readonly]):focus {
+    outline: 2px solid rgba(26, 35, 126, 0.22);
+    outline-offset: 0px;
+    border-color: #1a237e;
+  }
+
+  input[type="checkbox"],
+  input[type="radio"] {
+    pointer-events: auto;
+    cursor: pointer;
+  }
+}
+
+@layer base {
+  :root {
+    --font-sans: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, sans-serif;
+    --font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+    --font-editorial: 'Fraunces', Georgia, Cambria, 'Times New Roman', Times, serif;
+  }
+
+  body {
+    font-family: var(--font-sans);
+    background-color: #f8fafc;
+    color: #0f172a;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  code, pre, .font-mono {
+    font-family: var(--font-mono);
+  }
+}
+
+.font-editorial {
+  font-family: var(--font-editorial);
+}
+
+.tabular-nums {
+  font-variant-numeric: tabular-nums;
+}

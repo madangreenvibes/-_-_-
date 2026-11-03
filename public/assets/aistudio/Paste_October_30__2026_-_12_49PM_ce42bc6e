@@ -1,0 +1,1606 @@
+/**
+ * Nepal Premier League Manager - Clean Version
+ * Shortcodes: [setopress_npl], [setopress_npl_news]
+ * Version: 6.1.2 (PHP 7.0+ Compatible, Fixed Fatal Errors)
+ */
+
+// Prevent redeclaration errors
+if (!defined('SC_NPL_SERIES')) define('SC_NPL_SERIES', 'Nepal Premier League');
+if (!defined('SC_VERSION'))    define('SC_VERSION', '6.1.2');
+
+/* ─────────────────────────────────────────────
+   1. CORE HELPERS
+   ──────────────────────────────────────────── */
+if (!function_exists('sc_get')) {
+    function sc_get() {
+        $d = get_option('setopress_npl_data');
+        if (!is_array($d)) $d = array('series' => array(), 'matches' => array(), 'news' => array());
+        if (!isset($d['series'])) $d['series'] = array();
+        if (!isset($d['matches'])) $d['matches'] = array();
+        if (!isset($d['news'])) $d['news'] = array();
+        return $d;
+    }
+}
+
+if (!function_exists('sc_load_npl_defaults')) {
+    function sc_load_npl_defaults() {
+        $d   = sc_get();
+        $sn  = SC_NPL_SERIES;
+        $old = $d['series'][$sn] ?? array();
+        $list = array(
+            'Biratnagar Kings', 'Chitwan Rhinos', 'Janakpur Bolts', 'Karnali Yaks',
+            'Kathmandu Gurkhas', 'Lumbini Lions', 'Pokhara Avengers', 'Sudurpaschim Royals'
+        );
+        $teams = array();
+        foreach ($list as $tn) {
+            $p = $old['teams'][$tn] ?? array();
+            $teams[$tn] = array(
+                'name' => $tn, 'logo' => $p['logo'] ?? '', 'color' => $p['color'] ?? '#c8102e',
+                'captain' => $p['captain'] ?? '', 'coach' => $p['coach'] ?? '',
+                'owner' => $p['owner'] ?? '', 'venue' => $p['venue'] ?? '',
+                'titles' => $p['titles'] ?? '', 'description' => $p['description'] ?? '',
+                'players' => $p['players'] ?? array()
+            );
+        }
+        if (isset($teams['Biratnagar Kings']) && empty($teams['Biratnagar Kings']['description'])) {
+            $teams['Biratnagar Kings']['description'] = 'Representing Koshi Province in the Nepal Premier League.';
+            $teams['Biratnagar Kings']['color']       = '#c8102e';
+        }
+        $d['series'][$sn] = array(
+            'name' => $sn, 'format' => 'T20', 'season' => '2026',
+            'logo' => $old['logo'] ?? '', 'teams' => $teams
+        );
+        update_option('setopress_npl_data', $d);
+    }
+}
+
+if (!function_exists('sc_logo')) {
+    function sc_logo($s, $t) {
+        $ts = $s['teams'] ?? array();
+        if (!empty($ts[$t]['logo'])) return $ts[$t]['logo'];
+        foreach ($ts as $r) if (strcasecmp($r['name'], $t) === 0 && !empty($r['logo'])) return $r['logo'];
+        return '';
+    }
+}
+
+if (!function_exists('sc_team_color')) {
+    function sc_team_color($s, $t) {
+        $ts = $s['teams'] ?? array();
+        if (!empty($ts[$t]['color'])) return $ts[$t]['color'];
+        foreach ($ts as $r) if (strcasecmp($r['name'], $t) === 0 && !empty($r['color'])) return $r['color'];
+        return '#c8102e';
+    }
+}
+
+if (!function_exists('sc_format_datetime_full')) {
+    function sc_format_datetime_full($d, $t) {
+        if (empty($d)) return '';
+        $ts = strtotime($d . (empty($t) ? '' : ' ' . $t));
+        if (!$ts) return $d;
+        return date('D, j M Y, g:i A', $ts);
+    }
+}
+
+if (!function_exists('sc_merge_players')) {
+    function sc_merge_players($players) {
+        $merged = array();
+        foreach ($players as $p) {
+            $name  = trim($p['name']  ?? '');
+            $role  = trim($p['role']  ?? '');
+            $photo = trim($p['photo'] ?? '');
+            if (empty($name)) continue;
+            if (!isset($merged[$name])) $merged[$name] = array('name' => $name, 'roles' => array(), 'photo' => $photo);
+            if (!empty($role) && !in_array($role, $merged[$name]['roles'])) $merged[$name]['roles'][] = $role;
+            if (!empty($photo) && empty($merged[$name]['photo'])) $merged[$name]['photo'] = $photo;
+        }
+        return array_values($merged);
+    }
+}
+
+if (!function_exists('sc_parse_overs')) {
+    function sc_parse_overs($ov_str) {
+        if (empty($ov_str)) return 0;
+        $ov_str = trim($ov_str);
+        if (strpos($ov_str, '.') !== false) {
+            $parts = explode('.', $ov_str);
+            return intval($parts[0]) + (intval($parts[1]) / 6);
+        }
+        return floatval($ov_str);
+    }
+}
+
+if (!function_exists('sc_parse_score')) {
+    function sc_parse_score($score_str) {
+        if (empty($score_str)) return 0;
+        $parts = explode('/', trim($score_str));
+        return intval($parts[0]);
+    }
+}
+
+if (!function_exists('sc_parse_wickets')) {
+    function sc_parse_wickets($score_str) {
+        if (empty($score_str)) return 0;
+        $parts = explode('/', trim($score_str));
+        return isset($parts[1]) ? intval($parts[1]) : 0;
+    }
+}
+
+/* ────────────────────────────────────────────
+   2. INIT HOOKS
+   ──────────────────────────────────────────── */
+if (!function_exists('sc_npl_init')) {
+    function sc_npl_init() {
+        $d = get_option('setopress_npl_data');
+        if (!is_array($d) || empty($d['series']) || !isset($d['series'][SC_NPL_SERIES])) {
+            sc_load_npl_defaults();
+            update_option('sc_npl_ver', SC_VERSION);
+        }
+    }
+}
+add_action('init', 'sc_npl_init', 5);
+
+if (!function_exists('sc_npl_admin_init')) {
+    function sc_npl_admin_init() {
+        if (get_option('sc_npl_ver') !== SC_VERSION) {
+            sc_load_npl_defaults();
+            update_option('sc_npl_ver', SC_VERSION);
+        }
+    }
+}
+add_action('admin_init', 'sc_npl_admin_init');
+
+/* ─────────────────────────────────────────────
+   3. ADMIN MENU
+   ──────────────────────────────────────────── */
+if (!function_exists('sc_npl_admin_menu')) {
+    function sc_npl_admin_menu() {
+        add_menu_page('NPL Manager', 'NPL Manager', 'manage_options', 'setopress-npl', 'sc_npl_admin_page', 'dashicons-awards', 26);
+    }
+}
+add_action('admin_menu', 'sc_npl_admin_menu');
+
+/* ─────────────────────────────────────────────
+   4. POINTS TABLE
+   ──────────────────────────────────────────── */
+if (!function_exists('sc_npl_points')) {
+    function sc_npl_points($d, $series_name) {
+        $t = array();
+        $s = $d['series'][$series_name] ?? array();
+        if (!empty($s['teams'])) {
+            foreach ($s['teams'] as $row) {
+                $t[$row['name']] = array(
+                    'name' => $row['name'], 'logo' => $row['logo'],
+                    'p' => 0, 'w' => 0, 'l' => 0, 't' => 0, 'nr' => 0, 'pts' => 0,
+                    'nrr' => 0, 'runs_for' => 0, 'overs_for' => 0,
+                    'runs_against' => 0, 'overs_against' => 0, 'wkts_taken' => 0
+                );
+            }
+        }
+        foreach ($d['matches'] as $m) {
+            if (($m['series'] ?? '') !== $series_name) continue;
+            if (!empty($m['live'])) continue;
+            $t1 = $m['team1'] ?? ''; $t2 = $m['team2'] ?? '';
+            if (empty($t1) || empty($t2)) continue;
+            
+            $w = trim($m['winner'] ?? '');
+            $has_score = !empty($m['team1_score']) && !empty($m['team2_score']);
+            if ($w === '' && !$has_score) continue;
+            
+            if (!isset($t[$t1])) $t[$t1] = array('name' => $t1, 'logo' => '', 'p' => 0, 'w' => 0, 'l' => 0, 't' => 0, 'nr' => 0, 'pts' => 0, 'nrr' => 0, 'runs_for' => 0, 'overs_for' => 0, 'runs_against' => 0, 'overs_against' => 0, 'wkts_taken' => 0);
+            if (!isset($t[$t2])) $t[$t2] = array('name' => $t2, 'logo' => '', 'p' => 0, 'w' => 0, 'l' => 0, 't' => 0, 'nr' => 0, 'pts' => 0, 'nrr' => 0, 'runs_for' => 0, 'overs_for' => 0, 'runs_against' => 0, 'overs_against' => 0, 'wkts_taken' => 0);
+            
+            $t[$t1]['p']++; $t[$t2]['p']++;
+            if (strcasecmp($w, 'NR') === 0 || strcasecmp($w, 'Abandoned') === 0) {
+                $t[$t1]['nr']++; $t[$t2]['nr']++; $t[$t1]['pts']++; $t[$t2]['pts']++;
+            } elseif (strcasecmp($w, 'Tie') === 0) {
+                $t[$t1]['t']++; $t[$t2]['t']++; $t[$t1]['pts']++; $t[$t2]['pts']++;
+            } elseif (strcasecmp($w, $t1) === 0) {
+                $t[$t1]['w']++; $t[$t2]['l']++; $t[$t1]['pts'] += 2;
+            } elseif (strcasecmp($w, $t2) === 0) {
+                $t[$t2]['w']++; $t[$t1]['l']++; $t[$t2]['pts'] += 2;
+            }
+            
+            if ($has_score && strcasecmp($w, 'NR') !== 0 && strcasecmp($w, 'Abandoned') !== 0) {
+                $r1 = sc_parse_score($m['team1_score']); $o1 = sc_parse_overs($m['team1_overs']); $w1 = sc_parse_wickets($m['team1_score']);
+                $r2 = sc_parse_score($m['team2_score']); $o2 = sc_parse_overs($m['team2_overs']); $w2 = sc_parse_wickets($m['team2_score']);
+                if ($o1 > 0 && $o2 > 0) {
+                    $t[$t1]['runs_for'] += $r1; $t[$t1]['overs_for'] += $o1; $t[$t1]['runs_against'] += $r2; $t[$t1]['overs_against'] += $o2; $t[$t1]['wkts_taken'] += $w2;
+                    $t[$t2]['runs_for'] += $r2; $t[$t2]['overs_for'] += $o2; $t[$t2]['runs_against'] += $r1; $t[$t2]['overs_against'] += $o1; $t[$t2]['wkts_taken'] += $w1;
+                }
+            }
+        }
+        foreach ($t as &$row) {
+            if ($row['overs_for'] > 0 && $row['overs_against'] > 0) {
+                $row['nrr'] = ($row['runs_for'] / $row['overs_for']) - ($row['runs_against'] / $row['overs_against']);
+            }
+        }
+        unset($row);
+        usort($t, function ($a, $b) {
+            if ($a['pts'] !== $b['pts']) return $b['pts'] - $a['pts'];
+            if ($a['w'] !== $b['w']) return $b['w'] - $a['w'];
+            if (abs($a['nrr'] - $b['nrr']) > 0.0001) return $b['nrr'] <=> $a['nrr'];
+            if ($a['wkts_taken'] !== $b['wkts_taken']) return $b['wkts_taken'] - $a['wkts_taken'];
+            return strcasecmp($a['name'], $b['name']);
+        });
+        return $t;
+    }
+}
+
+/* ─────────────────────────────────────────────
+   5. ADMIN PAGE
+   ──────────────────────────────────────────── */
+if (!function_exists('sc_npl_admin_page')) {
+    function sc_npl_admin_page() {
+        if (!current_user_can('manage_options')) return;
+
+        $d = sc_get();
+        $current_series = SC_NPL_SERIES;
+        $info    = $d['series'][$current_series] ?? array();
+        $teams   = $info['teams'] ?? array();
+        $matches = $d['matches'] ?? array();
+        $news    = $d['news'] ?? array();
+
+        if (isset($_POST['npl_save_news']) && check_admin_referer('npl_news_nonce')) {
+            $nid      = sanitize_text_field($_POST['news_id'] ?? '');
+            $title    = sanitize_text_field(wp_unslash($_POST['news_title'] ?? ''));
+            $category = sanitize_text_field($_POST['news_category'] ?? 'press');
+            $date     = sanitize_text_field($_POST['news_date'] ?? date('Y-m-d'));
+            $time     = sanitize_text_field($_POST['news_time'] ?? '12:00');
+            $excerpt  = sanitize_textarea_field(wp_unslash($_POST['news_excerpt'] ?? ''));
+            $image    = esc_url_raw(wp_unslash($_POST['news_image'] ?? ''));
+
+            if (!empty($title) && !empty($date)) {
+                $id = $nid ? $nid : uniqid('npl_news_', true);
+                $d['news'][$id] = array(
+                    'id' => $id, 'title' => $title, 'category' => $category,
+                    'date' => $date, 'time' => $time, 'excerpt' => $excerpt, 'image' => $image,
+                    'team1' => sanitize_text_field($_POST['news_team1'] ?? ''),
+                    'team2' => sanitize_text_field($_POST['news_team2'] ?? ''),
+                );
+                update_option('setopress_npl_data', $d);
+                echo '<div class="notice notice-success is-dismissible"><p><strong>News Saved Successfully!</strong></p></div>';
+                $news = $d['news'];
+            }
+        }
+
+        if (isset($_GET['del_news']) && check_admin_referer('npl_del_news_' . sanitize_text_field($_GET['del_news']))) {
+            unset($d['news'][sanitize_text_field($_GET['del_news'])]);
+            update_option('setopress_npl_data', $d);
+            echo '<div class="notice notice-success is-dismissible"><p>News deleted.</p></div>';
+            $news = $d['news'];
+        }
+
+        $edit_news = isset($_GET['edit_news']) ? sanitize_text_field(wp_unslash($_GET['edit_news'])) : '';
+        $en = ($edit_news && isset($news[$edit_news])) ? $news[$edit_news] : array();
+
+        if (isset($_POST['npl_save_teams']) && check_admin_referer('npl_teams_nonce')) {
+            foreach ($teams as $tname => &$t) {
+                $idx = array_search($tname, array_keys($teams));
+                if (isset($_POST['team_players_json'][$idx])) {
+                    $decoded = json_decode(wp_unslash($_POST['team_players_json'][$idx]), true);
+                    if (is_array($decoded)) {
+                        $t['players'] = array_values(array_filter(array_map(function($p){
+                            $pn = sanitize_text_field(wp_unslash($p['name'] ?? ''));
+                            if ($pn === '') return null;
+                            return array('name' => $pn, 'role' => sanitize_text_field(wp_unslash($p['role'] ?? 'Batsman')), 'photo' => esc_url_raw(wp_unslash($p['photo'] ?? '')));
+                        }, $decoded)));
+                    }
+                }
+                if (isset($_POST['team_captain'][$idx])) $t['captain'] = sanitize_text_field(wp_unslash($_POST['team_captain'][$idx]));
+                if (isset($_POST['team_coach'][$idx]))   $t['coach']   = sanitize_text_field(wp_unslash($_POST['team_coach'][$idx]));
+                if (isset($_POST['team_owner'][$idx]))   $t['owner']   = sanitize_text_field(wp_unslash($_POST['team_owner'][$idx]));
+                if (isset($_POST['team_venue'][$idx]))   $t['venue']   = sanitize_text_field(wp_unslash($_POST['team_venue'][$idx]));
+                if (isset($_POST['team_logo'][$idx]))    $t['logo']    = esc_url_raw(wp_unslash($_POST['team_logo'][$idx]));
+                if (isset($_POST['team_color'][$idx]))   $t['color']   = sanitize_text_field(wp_unslash($_POST['team_color'][$idx]));
+            }
+            unset($t);
+            if (isset($_POST['series_logo']))   $info['logo']   = esc_url_raw(wp_unslash($_POST['series_logo']));
+            if (isset($_POST['series_season'])) $info['season'] = sanitize_text_field(wp_unslash($_POST['series_season']));
+            $d['series'][$current_series] = $info;
+            update_option('setopress_npl_data', $d);
+            echo '<div class="notice notice-success is-dismissible"><p><strong>NPL Data Saved Successfully!</strong></p></div>';
+            $d = sc_get();
+            $teams = $d['series'][$current_series]['teams'];
+        }
+
+             if (isset($_POST['npl_save_match']) && check_admin_referer('npl_match_nonce')) {
+    $mid = sanitize_text_field($_POST['match_id'] ?? '');
+    $t1  = sanitize_text_field(wp_unslash($_POST['team1'] ?? ''));
+    $t2  = sanitize_text_field(wp_unslash($_POST['team2'] ?? ''));
+    $dt  = sanitize_text_field($_POST['match_date'] ?? '');
+    
+    // Debug: Log what's being submitted
+    error_log('NPL Match Save Debug:');
+    error_log('  match_id: ' . $mid);
+    error_log('  team1: ' . $t1);
+    error_log('  team2: ' . $t2);
+    error_log('  date: ' . $dt);
+    error_log('  team1_score: ' . sanitize_text_field(wp_unslash($_POST['team1_score'] ?? '')));
+    error_log('  team2_score: ' . sanitize_text_field(wp_unslash($_POST['team2_score'] ?? '')));
+    error_log('  winner: ' . sanitize_text_field(wp_unslash($_POST['winner'] ?? '')));
+    
+    if ($dt && $t1 && $t2 && $t1 !== $t2) {
+        $id = ($mid && isset($matches[$mid])) ? $mid : uniqid('npl_match_', true);
+        
+        $match_data = array(
+            'id' => $id, 
+            'series' => $current_series,
+            'match_no' => sanitize_text_field(wp_unslash($_POST['match_no'] ?? '')),
+            'date' => $dt, 
+            'time' => sanitize_text_field($_POST['match_time'] ?? ''),
+            'venue' => sanitize_text_field(wp_unslash($_POST['match_venue'] ?? '')),
+            'team1' => $t1, 
+            'team2' => $t2,
+            'team1_score' => sanitize_text_field(wp_unslash($_POST['team1_score'] ?? '')),
+            'team2_score' => sanitize_text_field(wp_unslash($_POST['team2_score'] ?? '')),
+            'team1_overs' => sanitize_text_field(wp_unslash($_POST['team1_overs'] ?? '')),
+            'team2_overs' => sanitize_text_field(wp_unslash($_POST['team2_overs'] ?? '')),
+            'winner' => sanitize_text_field(wp_unslash($_POST['winner'] ?? '')),
+            'result_text' => sanitize_text_field(wp_unslash($_POST['result_text'] ?? '')),
+            'live' => !empty($_POST['match_live']) ? 1 : 0,
+            'live_status' => sanitize_text_field(wp_unslash($_POST['match_live_status'] ?? ''))
+        );
+        
+        // Debug: Log the final data being saved
+        error_log('  Saving match data: ' . print_r($match_data, true));
+        
+        $d['matches'][$id] = $match_data;
+        $saved = update_option('setopress_npl_data', $d);
+        
+        if ($saved) {
+            echo '<div class="notice notice-success is-dismissible"><p><strong>✅ Match Saved Successfully!</strong> (ID: ' . esc_html($id) . ')</p></div>';
+            $matches = $d['matches'];
+        } else {
+            echo '<div class="notice notice-error is-dismissible"><p><strong>❌ Failed to save to database!</strong></p></div>';
+        }
+    } else {
+        echo '<div class="notice notice-error is-dismissible"><p><strong>❌ Error: Date, Team 1, and Team 2 are required, and both teams must be different.</strong></p></div>';
+    }
+} elseif (isset($_POST['npl_save_match'])) {
+    echo '<div class="notice notice-error is-dismissible"><p><strong>❌ Security check failed. Please refresh and try again.</strong></p></div>';
+}
+        
+        
+
+        if (isset($_GET['del_match']) && check_admin_referer('npl_del_match_' . sanitize_text_field($_GET['del_match']))) {
+            unset($d['matches'][sanitize_text_field($_GET['del_match'])]);
+            update_option('setopress_npl_data', $d);
+            echo '<div class="notice notice-success is-dismissible"><p>Match deleted.</p></div>';
+            $matches = $d['matches'];
+        }
+
+        $total_matches = count($matches);
+        $total_players = 0;
+        foreach ($teams as $t) { $total_players += count($t['players'] ?? array()); }
+        $total_news = count($news);
+
+        $edit_match = isset($_GET['edit_match']) ? sanitize_text_field(wp_unslash($_GET['edit_match'])) : '';
+        $em = ($edit_match && isset($matches[$edit_match])) ? $matches[$edit_match] : array();
+        ?>
+        <div class="npl-admin-wrap">
+            <div class="npl-admin-header">
+                <h1>🏏 Nepal Premier League Manager</h1>
+                <p>Manage teams, squads, matches, and news for the NPL <?php echo esc_html($info['season'] ?? '2026'); ?></p>
+            </div>
+            <div class="npl-stats-grid">
+                <div class="npl-stat-card"><div class="npl-stat-value">8</div><div class="npl-stat-label">Franchise Teams</div></div>
+                <div class="npl-stat-card"><div class="npl-stat-value"><?php echo $total_matches; ?></div><div class="npl-stat-label">Total Matches</div></div>
+                <div class="npl-stat-card"><div class="npl-stat-value"><?php echo $total_news; ?></div><div class="npl-stat-label">News Articles</div></div>
+                <div class="npl-stat-card"><div class="npl-stat-value"><?php echo $total_players; ?></div><div class="npl-stat-label">Registered Players</div></div>
+            </div>
+            <div class="npl-tabs">
+                <button class="npl-tab active" data-tab="news">📰 News</button>
+                <button class="npl-tab" data-tab="teams">👥 Teams & Squads</button>
+                <button class="npl-tab" data-tab="matches">🏏 Matches</button>
+                <button class="npl-tab" data-tab="shortcodes">📌 Shortcodes</button>
+            </div>
+
+            <!-- NEWS PANEL -->
+            <div class="npl-panel active" data-panel="news">
+                <div class="npl-card">
+                    <h2><?php echo !empty($en) ? '✏️ Edit News Article' : '➕ Add New News Article'; ?></h2>
+                    <form method="post">
+                        <?php wp_nonce_field('npl_news_nonce'); ?>
+                        <input type="hidden" name="news_id" value="<?php echo esc_attr($en['id'] ?? ''); ?>">
+                        <div style="display:grid;grid-template-columns:1fr 1fr;gap:20px;">
+                            <div>
+                                <div class="npl-form-row"><div class="npl-form-label">News Title</div><div><input type="text" name="news_title" class="npl-form-input" value="<?php echo esc_attr($en['title'] ?? ''); ?>" required></div></div>
+                                <div class="npl-form-row"><div class="npl-form-label">Category</div><div><select name="news_category" class="npl-form-input"><option value="press" <?php selected(($en['category'] ?? 'press'), 'press'); ?>>Press Release</option><option value="match" <?php selected(($en['category'] ?? 'press'), 'match'); ?>>Match Report</option><option value="update" <?php selected(($en['category'] ?? 'press'), 'update'); ?>>General Update</option></select></div></div>
+                                <div class="npl-form-row"><div class="npl-form-label">Date</div><div><input type="date" name="news_date" class="npl-form-input" value="<?php echo esc_attr($en['date'] ?? date('Y-m-d')); ?>" required></div></div>
+                                <div class="npl-form-row"><div class="npl-form-label">Time</div><div><input type="time" name="news_time" class="npl-form-input" value="<?php echo esc_attr($en['time'] ?? '12:00'); ?>"></div></div>
+                            </div>
+                            <div>
+                                <div class="npl-form-row"><div class="npl-form-label">Featured Image</div><div><span class="npl-upw" style="display:inline-flex;align-items:center;gap:12px;"><input type="hidden" name="news_image" class="npl-lv" value="<?php echo esc_attr($en['image'] ?? ''); ?>"><img class="npl-lp" src="<?php echo esc_url($en['image'] ?? ''); ?>" style="<?php echo !empty($en['image']) ? 'width:80px;height:80px;object-fit:cover;border-radius:8px;' : 'display:none;width:80px;height:80px;'; ?>"><button type="button" class="npl-btn npl-btn-secondary npl-up">Upload Image</button><button type="button" class="npl-btn npl-btn-secondary npl-rm" style="<?php echo !empty($en['image']) ? '' : 'display:none;'; ?>">Remove</button></span></div></div>
+                                <div class="npl-form-row"><div class="npl-form-label">Team 1 (Optional)</div><div><select name="news_team1" class="npl-form-input"><option value="">— Select Team —</option><?php foreach ($teams as $tn => $t) : ?><option value="<?php echo esc_attr($tn); ?>" <?php selected(($en['team1'] ?? ''), $tn); ?>><?php echo esc_html($tn); ?></option><?php endforeach; ?></select></div></div>
+                                <div class="npl-form-row"><div class="npl-form-label">Team 2 (Optional)</div><div><select name="news_team2" class="npl-form-input"><option value="">— Select Team —</option><?php foreach ($teams as $tn => $t) : ?><option value="<?php echo esc_attr($tn); ?>" <?php selected(($en['team2'] ?? ''), $tn); ?>><?php echo esc_html($tn); ?></option><?php endforeach; ?></select></div></div>
+                            </div>
+                        </div>
+                        <div class="npl-form-row"><div class="npl-form-label">Excerpt / Summary</div><div><textarea name="news_excerpt" class="npl-form-input" rows="4" placeholder="Brief summary of the news..."><?php echo esc_textarea($en['excerpt'] ?? ''); ?></textarea></div></div>
+                        <p style="margin-top:25px;"><button type="submit" name="npl_save_news" class="npl-btn" style="padding:14px 32px;font-size:16px;"><?php echo !empty($en) ? '✅ Update News' : '➕ Save New News'; ?></button><?php if (!empty($en)) : ?> <a href="<?php echo esc_url(admin_url('admin.php?page=setopress-npl')); ?>" class="npl-btn npl-btn-secondary" style="padding:14px 24px;font-size:15px;margin-left:10px;">Cancel</a><?php endif; ?></p>
+                    </form>
+                </div>
+                <?php if (!empty($news)) : ?>
+                <div class="npl-card">
+                    <h2>📋 All News Articles (<?php echo count($news); ?>)</h2>
+                    <table class="widefat striped" style="border-radius:8px;overflow:hidden;">
+                        <thead style="background:#f8fafc;"><tr><th>Date</th><th>Category</th><th>Title</th><th>Teams</th><th>Action</th></tr></thead>
+                        <tbody>
+                        <?php
+                        $ns = $news;
+                        usort($ns, function($a,$b){ return strcmp($b['date']??'', $a['date']??''); });
+                        foreach ($ns as $n) :
+                            $category = $n['category'] ?? 'press';
+                            $cat_label = $category === 'match' ? 'Match Report' : ($category === 'update' ? 'Update' : 'Press Release');
+                            $cat_color = $category === 'match' ? '#16a34a' : ($category === 'update' ? '#1e3a8a' : '#dc2626');
+                        ?>
+                        <tr>
+                            <td><?php echo esc_html($n['date'] . ' ' . ($n['time'] ?? '')); ?></td>
+                            <td><span style="background:<?php echo $cat_color; ?>;color:white;padding:3px 10px;border-radius:99px;font-size:11px;font-weight:700;"><?php echo esc_html($cat_label); ?></span></td>
+                            <td><?php echo esc_html($n['title']); ?></td>
+                            <td><?php echo esc_html(($n['team1'] ?? '') . (!empty($n['team2']) ? ' vs ' . $n['team2'] : '')); ?></td>
+                            <td>
+                                <a class="npl-btn npl-btn-secondary" href="<?php echo esc_url(admin_url('admin.php?page=setopress-npl&edit_news='.rawurlencode($n['id']))); ?>" style="padding:6px 12px;font-size:12px;">Edit</a>
+                                <a class="npl-btn npl-btn-secondary" href="<?php echo esc_url(wp_nonce_url(admin_url('admin.php?page=setopress-npl&del_news='.rawurlencode($n['id'])), 'npl_del_news_'.$n['id'])); ?>" style="padding:6px 12px;font-size:12px;color:#ef4444;" onclick="return confirm('Delete this news article?');">Delete</a>
+                            </td>
+                        </tr>
+                        <?php endforeach; ?>
+                        </tbody>
+                    </table>
+                </div>
+                <?php else : ?>
+                <div class="npl-card" style="text-align:center;padding:40px;color:#64748b;"><p>No news articles yet. Add your first news article above.</p></div>
+                <?php endif; ?>
+            </div>
+
+            <!-- TEAMS PANEL -->
+            <div class="npl-panel" data-panel="teams">
+                <div class="npl-card">
+                    <h2>️ League Settings</h2>
+                    <form method="post" id="npl-series-form"><?php wp_nonce_field('npl_teams_nonce'); ?>
+                    <div class="npl-form-row"><div class="npl-form-label">League Logo</div><div><span class="npl-upw" style="display:inline-flex;align-items:center;gap:12px;"><input type="hidden" name="series_logo" class="npl-lv" value="<?php echo esc_attr($info['logo'] ?? ''); ?>"><img class="npl-lp" src="<?php echo esc_url($info['logo'] ?? ''); ?>" style="<?php echo !empty($info['logo']) ? 'width:80px;height:80px;object-fit:contain;border-radius:10px;background:#f8fafc;padding:8px;border:2px solid #e2e8f0;' : 'display:none;width:80px;height:80px;'; ?>"><button type="button" class="npl-btn npl-btn-secondary npl-up">Upload Logo</button><button type="button" class="npl-btn npl-btn-secondary npl-rm" style="<?php echo !empty($info['logo']) ? '' : 'display:none;'; ?>">Remove</button></span></div></div>
+                    <div class="npl-form-row"><div class="npl-form-label">Season Year</div><div><input type="text" name="series_season" class="npl-form-input" value="<?php echo esc_attr($info['season'] ?? '2026'); ?>" style="max-width:300px;"></div></div>
+                    <hr style="margin:30px 0;border:none;border-top:2px solid #e2e8f0;">
+                    <h2>👥 NPL Franchise Teams & Squads</h2>
+                    <p style="color:#64748b;font-size:14px;margin-bottom:20px;">Select a team below to manage its captain, coach, and add players to the squad.</p>
+                    <div style="background:#fef2f2;border:2px solid #fecaca;border-radius:12px;padding:25px;margin-bottom:25px;">
+                        <label style="display:block;font-weight:700;margin-bottom:8px;color:#991b1b;font-size:13px;">Select Team to Edit:</label>
+                        <select id="npl-player-team-select" class="npl-form-input" style="border-color:#f87171;">
+                            <option value="">— Choose a team —</option>
+                            <?php $tIdx = 0; foreach ($teams as $tname => $td) : $pCount = count($td['players'] ?? array()); ?>
+                            <option value="<?php echo $tIdx; ?>"><?php echo esc_html($tname); ?> (<?php echo $pCount; ?> players)</option>
+                            <?php $tIdx++; endforeach; ?>
+                        </select>
+                    </div>
+                    <div id="npl-player-panel" style="display:none;">
+                        <div style="display:flex;align-items:center;gap:15px;margin-bottom:25px;padding-bottom:20px;border-bottom:2px solid #e2e8f0;">
+                            <img id="npl-player-team-logo" src="" style="width:50px;height:50px;object-fit:contain;border-radius:10px;background:#f8fafc;padding:6px;display:none;">
+                            <h3 id="npl-player-team-title" style="margin:0;font-size:20px;font-weight:800;color:#c8102e;"></h3>
+                            <span id="npl-player-count" style="margin-left:auto;background:#c8102e;color:#fff;padding:6px 16px;border-radius:999px;font-size:13px;font-weight:700;">0 players</span>
+                        </div>
+                        <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:15px;margin-bottom:20px;">
+                            <?php $tIdx = 0; foreach ($teams as $tname => $td) :
+                            $playersJson = json_encode($td['players'] ?? array(), JSON_HEX_APOS);
+                            ?>
+                            <div class="npl-team-card" id="npl-team-card-<?php echo $tIdx; ?>" style="display:none;" data-idx="<?php echo $tIdx; ?>">
+                                <div class="npl-team-header">
+                                    <span class="npl-upw" style="display:inline-flex;align-items:center;gap:8px;">
+                                        <input type="hidden" name="team_logo[]" class="npl-lv" value="<?php echo esc_attr($td['logo'] ?? ''); ?>">
+                                        <img class="npl-lp npl-team-logo-preview" src="<?php echo esc_url($td['logo'] ?? ''); ?>" style="<?php echo !empty($td['logo']) ? '' : 'display:none;'; ?>">
+                                        <button type="button" class="npl-btn npl-btn-secondary npl-up" style="padding:6px 12px;font-size:12px;">📷 Logo</button>
+                                    </span>
+                                    <input type="color" name="team_color[]" class="npl-form-input" value="<?php echo esc_attr($td['color'] ?? '#c8102e'); ?>" style="width:50px;height:40px;padding:2px;cursor:pointer;" title="Team Color">
+                                </div>
+                                <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
+                                    <input type="text" name="team_captain[]" class="npl-form-input" value="<?php echo esc_attr($td['captain'] ?? ''); ?>" placeholder="Captain Name">
+                                    <input type="text" name="team_coach[]" class="npl-form-input" value="<?php echo esc_attr($td['coach'] ?? ''); ?>" placeholder="Coach Name">
+                                    <input type="text" name="team_owner[]" class="npl-form-input" value="<?php echo esc_attr($td['owner'] ?? ''); ?>" placeholder="Owner Name">
+                                    <input type="text" name="team_venue[]" class="npl-form-input" value="<?php echo esc_attr($td['venue'] ?? ''); ?>" placeholder="Home Venue">
+                                </div>
+                                <input type="hidden" name="team_players_json[]" class="npl-players-json" value='<?php echo $playersJson; ?>'>
+                            </div>
+                            <?php $tIdx++; endforeach; ?>
+                        </div>
+                        <div style="background:#f8fafc;padding:20px;border-radius:10px;margin-bottom:25px;border:2px dashed #cbd5e0;">
+                            <h4 style="margin:0 0 15px;color:#475569;font-size:15px;font-weight:700;"> Add New Player</h4>
+                            <div style="display:flex;gap:15px;flex-wrap:wrap;align-items:end;">
+                                <div style="flex:2;min-width:250px;"><label style="display:block;font-size:13px;font-weight:600;color:#64748b;margin-bottom:6px;">Player Name</label><input type="text" id="npl-new-player-name" class="npl-form-input" placeholder="Enter player full name"></div>
+                                <div style="flex:1;min-width:200px;"><label style="display:block;font-size:13px;font-weight:600;color:#64748b;margin-bottom:6px;">Role</label><select id="npl-new-player-role" class="npl-form-input"><option value="Batsman">🏏 Batsman</option><option value="Bowler">🎯 Bowler</option><option value="Allrounder">🔄 Allrounder</option><option value="Wicketkeeper">🧤 Wicketkeeper</option><option value="Captain">👑 Captain</option><option value="Vice-captain">⭐ Vice-captain</option><option value="Marquee Player">💎 Marquee Player</option></select></div>
+                                <button type="button" id="npl-add-player-btn" class="npl-btn" style="padding:10px 24px;height:44px;">+ Add Player</button>
+                            </div>
+                        </div>
+                        <h4 style="margin:0 0 15px;color:#475569;font-size:15px;font-weight:700;">📋 Current Squad</h4>
+                        <div id="npl-player-list" style="min-height:80px;"></div>
+                        <p id="npl-no-players" style="display:none;color:#94a3b8;font-style:italic;text-align:center;padding:30px;font-size:14px;">No players added yet.</p>
+                    </div>
+                    <p style="margin-top:30px;"><button type="submit" name="npl_save_teams" class="npl-btn" style="padding:14px 32px;font-size:16px;">💾 Save All NPL Data</button></p>
+                    </form>
+                </div>
+            </div>
+
+            <!-- MATCHES PANEL -->
+            <div class="npl-panel" data-panel="matches">
+                <div class="npl-card">
+                    <h2><?php echo !empty($em) ? '️ Edit Match' : '➕ Add New NPL Match'; ?></h2>
+                    <form method="post"><?php wp_nonce_field('npl_match_nonce'); ?>
+                    <input type="hidden" name="match_id" value="<?php echo esc_attr($em['id'] ?? ''); ?>">
+                    <div style="display:grid;grid-template-columns:1fr 1fr;gap:20px;">
+                        <div>
+                            <div class="npl-form-row"><div class="npl-form-label">Match No</div><div><input type="text" name="match_no" class="npl-form-input" value="<?php echo esc_attr($em['match_no'] ?? ''); ?>"></div></div>
+                            <div class="npl-form-row"><div class="npl-form-label">Date</div><div><input type="date" name="match_date" class="npl-form-input" value="<?php echo esc_attr($em['date'] ?? ''); ?>" required></div></div>
+                            <div class="npl-form-row"><div class="npl-form-label">Time</div><div><input type="time" name="match_time" class="npl-form-input" value="<?php echo esc_attr($em['time'] ?? ''); ?>"></div></div>
+                            <div class="npl-form-row"><div class="npl-form-label">Venue</div><div><input type="text" name="match_venue" class="npl-form-input" value="<?php echo esc_attr($em['venue'] ?? ''); ?>"></div></div>
+                        </div>
+                        <div>
+                            <div class="npl-form-row"><div class="npl-form-label">Team 1</div><div><select name="team1" class="npl-form-input" required><?php foreach ($teams as $tn => $t) : ?><option value="<?php echo esc_attr($tn); ?>" <?php selected(($em['team1'] ?? ''), $tn); ?>><?php echo esc_html($tn); ?></option><?php endforeach; ?></select></div></div>
+                            <div class="npl-form-row"><div class="npl-form-label">Team 2</div><div><select name="team2" class="npl-form-input" required><?php foreach ($teams as $tn => $t) : ?><option value="<?php echo esc_attr($tn); ?>" <?php selected(($em['team2'] ?? ''), $tn); ?>><?php echo esc_html($tn); ?></option><?php endforeach; ?></select></div></div>
+                            <div class="npl-form-row"><div class="npl-form-label">T1 Score</div><div><input type="text" name="team1_score" class="npl-form-input" value="<?php echo esc_attr($em['team1_score'] ?? ''); ?>" placeholder="e.g. 161/5"></div></div>
+                            <div class="npl-form-row"><div class="npl-form-label">T2 Score</div><div><input type="text" name="team2_score" class="npl-form-input" value="<?php echo esc_attr($em['team2_score'] ?? ''); ?>" placeholder="e.g. 155/8"></div></div>
+                        </div>
+                    </div>
+                    <div class="npl-form-row"><div class="npl-form-label">Winner</div><div><input type="text" name="winner" class="npl-form-input" value="<?php echo esc_attr($em['winner'] ?? ''); ?>"></div></div>
+                    <div class="npl-form-row"><div class="npl-form-label">Result Text</div><div><input type="text" name="result_text" class="npl-form-input" value="<?php echo esc_attr($em['result_text'] ?? ''); ?>" placeholder="e.g. Kings win by 5 wickets"></div></div>
+                    <div class="npl-form-row"><div class="npl-form-label">🔴 Live</div><div><label style="display:flex;align-items:center;gap:10px;font-weight:600;"><input type="checkbox" name="match_live" value="1" <?php checked(!empty($em['live'])); ?> style="width:18px;height:18px;"> Currently live match</label></div></div>
+                    <div class="npl-form-row"><div class="npl-form-label">Live Status</div><div><input type="text" name="match_live_status" class="npl-form-input" value="<?php echo esc_attr($em['live_status'] ?? ''); ?>" placeholder="e.g. Kings need 24 runs in 18 balls"></div></div>
+                    <p style="margin-top:25px;"><button type="submit" name="npl_save_match" class="npl-btn" style="padding:14px 32px;font-size:16px;"><?php echo !empty($em) ? '✅ Update Match' : '💾 Save New Match'; ?></button><?php if (!empty($em)) : ?> <a href="<?php echo esc_url(admin_url('admin.php?page=setopress-npl')); ?>" class="npl-btn npl-btn-secondary" style="padding:14px 24px;font-size:15px;margin-left:10px;">Cancel</a><?php endif; ?></p>
+                    </form>
+                </div>
+                <?php if (!empty($matches)) : ?>
+                <div class="npl-card">
+                    <h2>📝 All NPL Matches</h2>
+                    <table class="widefat striped" style="border-radius:8px;overflow:hidden;">
+                        <thead style="background:#f8fafc;"><tr><th>Date</th><th>Match</th><th>Teams</th><th>Status</th><th>Action</th></tr></thead>
+                        <tbody>
+                        <?php $ms = $matches; usort($ms, function($a,$b){ return strcmp($b['date']??'', $a['date']??''); }); foreach ($ms as $m) : ?>
+                        <tr <?php if (!empty($m['live'])) echo 'style="background:#fef2f2;"'; ?>>
+                            <td><?php echo esc_html($m['date']); ?></td>
+                            <td><?php echo esc_html($m['match_no'] ?? ''); ?></td>
+                            <td><?php echo esc_html($m['team1'] . ' vs ' . $m['team2']); ?></td>
+                            <td><?php if (!empty($m['live'])) echo '<span class="npl-live-indicator">LIVE</span>'; elseif (!empty($m['winner'])) echo '<strong style="color:#10b981;">'.esc_html($m['winner']).'</strong>'; else echo '<em style="color:#64748b;">Fixture</em>'; ?></td>
+                            <td>
+                                <a class="npl-btn npl-btn-secondary" href="<?php echo esc_url(admin_url('admin.php?page=setopress-npl&edit_match='.rawurlencode($m['id']))); ?>" style="padding:6px 12px;font-size:12px;">Edit</a>
+                                <a class="npl-btn npl-btn-secondary" href="<?php echo esc_url(wp_nonce_url(admin_url('admin.php?page=setopress-npl&del_match='.rawurlencode($m['id'])), 'npl_del_match_'.$m['id'])); ?>" style="padding:6px 12px;font-size:12px;color:#ef4444;" onclick="return confirm('Delete this match?');">Delete</a>
+                            </td>
+                        </tr>
+                        <?php endforeach; ?>
+                        </tbody>
+                    </table>
+                </div>
+                <?php endif; ?>
+            </div>
+
+            <!-- SHORTCODES PANEL -->
+            <div class="npl-panel" data-panel="shortcodes">
+                <div class="npl-card">
+                    <h2> Available Shortcodes</h2>
+                    <div style="display:grid;gap:16px;">
+                        <div style="background:#f8fafc;border-radius:8px;padding:20px;border-left:4px solid #c8102e;"><code style="font-size:16px;font-weight:700;color:#c8102e;">[setopress_npl]</code><p style="margin:8px 0 0;color:#475569;font-size:14px;">The main IPL-style homepage for the Nepal Premier League.</p></div>
+                        <div style="background:#f8fafc;border-radius:8px;padding:20px;border-left:4px solid #c8102e;"><code style="font-size:16px;font-weight:700;color:#c8102e;">[setopress_npl_news]</code><p style="margin:8px 0 0;color:#475569;font-size:14px;">Dedicated news page with all articles and filters.</p></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <style>
+        .npl-admin-wrap { background: #f0f2f5; margin: -20px; padding: 20px; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+        .npl-admin-header { background: linear-gradient(135deg, #c8102e 0%, #8b0a1e 100%); color: white; padding: 30px; border-radius: 12px; margin-bottom: 30px; box-shadow: 0 4px 15px rgba(200,16,46,0.3); }
+        .npl-admin-header h1 { margin: 0 0 10px; font-size: 28px; font-weight: 800; }
+        .npl-admin-header p { margin: 0; opacity: 0.9; font-size: 14px; }
+        .npl-stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 20px; margin-bottom: 30px; }
+        .npl-stat-card { background: white; padding: 20px; border-radius: 10px; text-align: center; box-shadow: 0 2px 8px rgba(0,0,0,0.05); border-top: 4px solid #c8102e; }
+        .npl-stat-value { font-size: 32px; font-weight: 800; color: #c8102e; margin-bottom: 5px; }
+        .npl-stat-label { font-size: 13px; color: #64748b; text-transform: uppercase; letter-spacing: 0.5px; font-weight: 600; }
+        .npl-btn { display: inline-flex; align-items: center; gap: 8px; padding: 10px 20px; background: linear-gradient(135deg, #c8102e 0%, #8b0a1e 100%); color: white; border: none; border-radius: 8px; font-weight: 600; cursor: pointer; transition: all 0.3s; text-decoration: none; font-size: 14px; }
+        .npl-btn:hover { transform: translateY(-2px); box-shadow: 0 4px 12px rgba(200,16,46,0.4); color: white; }
+        .npl-btn-secondary { background: #e2e8f0; color: #475569; }
+        .npl-btn-secondary:hover { background: #cbd5e1; color: #475569; box-shadow: none; }
+        .npl-card { background: white; border-radius: 12px; padding: 25px; margin-bottom: 25px; box-shadow: 0 2px 8px rgba(0,0,0,0.05); }
+        .npl-card h2 { margin: 0 0 20px; font-size: 20px; color: #0f172a; font-weight: 700; display: flex; align-items: center; gap: 10px; }
+        .npl-card h2::before { content: ''; width: 4px; height: 24px; background: #c8102e; border-radius: 2px; }
+        .npl-tabs { display: flex; gap: 0; border-bottom: 2px solid #e2e8f0; margin-bottom: 25px; background: white; border-radius: 8px 8px 0 0; overflow-x: auto; }
+        .npl-tab { padding: 14px 24px; background: #f8fafc; border: none; cursor: pointer; font-weight: 600; color: #64748b; font-size: 14px; transition: all 0.3s; border-bottom: 3px solid transparent; white-space: nowrap; }
+        .npl-tab.active { background: white; color: #c8102e; border-bottom-color: #c8102e; }
+        .npl-tab:hover { background: #f1f5f9; }
+        .npl-panel { display: none; }
+        .npl-panel.active { display: block; }
+        .npl-form-row { display: grid; grid-template-columns: 180px 1fr; gap: 20px; margin-bottom: 20px; align-items: start; }
+        .npl-form-label { font-weight: 600; color: #475569; padding-top: 10px; font-size: 14px; }
+        .npl-form-input { width: 100%; padding: 10px 14px; border: 2px solid #e2e8f0; border-radius: 8px; font-size: 14px; transition: all 0.3s; }
+        .npl-form-input:focus { outline: none; border-color: #c8102e; box-shadow: 0 0 0 3px rgba(200,16,46,0.1); }
+        .npl-team-card { background: #f8fafc; border: 2px solid #e2e8f0; border-radius: 10px; padding: 20px; margin-bottom: 20px; transition: all 0.3s; }
+        .npl-team-card:hover { border-color: #c8102e; box-shadow: 0 4px 12px rgba(200,16,46,0.1); }
+        .npl-team-header { display: flex; align-items: center; gap: 15px; margin-bottom: 15px; flex-wrap: wrap; }
+        .npl-team-logo-preview { width: 50px; height: 50px; border-radius: 8px; object-fit: contain; background: white; padding: 6px; border: 2px solid #e2e8f0; }
+        .npl-player-row { display: flex; align-items: center; gap: 12px; padding: 12px; background: white; border-radius: 8px; margin-bottom: 10px; border: 1px solid #e2e8f0; }
+        .npl-player-number { width: 32px; height: 32px; border-radius: 50%; background: #c8102e; color: white; display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 13px; flex-shrink: 0; }
+        .npl-live-indicator { display: inline-flex; align-items: center; gap: 6px; background: #ef4444; color: white; padding: 4px 12px; border-radius: 999px; font-size: 11px; font-weight: 700; text-transform: uppercase; }
+        .npl-live-indicator::before { content: ''; width: 6px; height: 6px; background: white; border-radius: 50%; animation: nplPulse 1.5s infinite; }
+        @keyframes nplPulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
+        @media (max-width: 768px) { .npl-form-row { grid-template-columns: 1fr; } }
+        </style>
+
+        <script>
+        jQuery(function($){
+            $(document).on('click', '.npl-up', function(e){
+                e.preventDefault();
+                var w = $(this).closest('.npl-upw');
+                var f = wp.media({title: 'Select Image', button: {text: 'Use Image'}, library: {type: 'image'}, multiple: false});
+                f.on('select', function(){
+                    var u = f.state().get('selection').first().toJSON().url;
+                    w.find('.npl-lv').val(u);
+                    w.find('.npl-lp').attr('src', u).show();
+                    w.find('.npl-rm').show();
+                });
+                f.open();
+            });
+            $(document).on('click', '.npl-rm', function(e){
+                e.preventDefault();
+                var w = $(this).closest('.npl-upw');
+                w.find('.npl-lv').val('');
+                w.find('.npl-lp').attr('src', '').hide();
+                $(this).hide();
+            });
+            $('.npl-tab').on('click', function(){
+                var tab = $(this).data('tab');
+                $('.npl-tab').removeClass('active');
+                $('.npl-panel').removeClass('active');
+                $(this).addClass('active');
+                $('[data-panel="'+tab+'"]').addClass('active');
+            });
+            var teamList = <?php echo json_encode(array_values(array_map(function($k, $v) { return array('name' => $k, 'players' => $v['players'] ?? array(), 'logo' => $v['logo'] ?? '', 'color' => $v['color'] ?? '#c8102e'); }, array_keys($teams), $teams))); ?>;
+            var currentTeamIdx = null;
+            function saveCurrentTeamPlayers() {
+                if (currentTeamIdx === null) return;
+                var players = [];
+                $('#npl-player-list .npl-player-row-data').each(function(){
+                    var name  = $(this).find('.npl-p-name').val().trim();
+                    var role  = $(this).find('.npl-p-role').val();
+                    var photo = $(this).find('.npl-p-photo').val();
+                    if (name) players.push({name: name, role: role, photo: photo});
+                });
+                teamList[currentTeamIdx].players = players;
+                var $tr = $('.npl-team-card').eq(currentTeamIdx);
+                if ($tr.length) $tr.find('.npl-players-json').val(JSON.stringify(players));
+                var $option = $('#npl-player-team-select option').eq(currentTeamIdx + 1);
+                if ($option.length) {
+                    var teamName = $option.text().split(' (')[0];
+                    $option.text(teamName + ' (' + players.length + ' players)');
+                }
+                $('#npl-player-count').text(players.length + ' player'+(players.length!==1?'s':''));
+            }
+            $('#npl-player-team-select').on('change', function(){
+                var idx = $(this).val();
+                $('.npl-team-card').hide();
+                if (idx === '' || idx === null) { $('#npl-player-panel').hide(); currentTeamIdx = null; return; }
+                currentTeamIdx = parseInt(idx);
+                $('#npl-team-card-' + idx).show();
+                var team = teamList[currentTeamIdx];
+                if (!team) return;
+                $('#npl-player-team-title').text(team.name);
+                var $tr = $('.npl-team-card').eq(currentTeamIdx);
+                var logo = $tr.length ? $tr.find('.npl-lv').val() : '';
+                if (logo) $('#npl-player-team-logo').attr('src', logo).show(); else $('#npl-player-team-logo').hide();
+                var $list = $('#npl-player-list'); $list.empty();
+                var players = team.players || [];
+                if (!players || players.length === 0) { $('#npl-no-players').show(); } 
+                else {
+                    $('#npl-no-players').hide();
+                    players.forEach(function(p, i){
+                        var row = '<div class="npl-player-row npl-player-row-data">' +
+                            '<span class="npl-player-number">'+(i+1)+'</span>' +
+                            '<input type="text" class="npl-p-name npl-form-input" value="'+escapeHtml(p.name)+'" placeholder="Player Name" style="flex:2;">' +
+                            '<select class="npl-p-role npl-form-input" style="flex:1;">' +
+                            '<option value="Captain"'+(p.role==='Captain'?' selected':'')+'>👑 Captain</option>' +
+                            '<option value="Vice-captain"'+(p.role==='Vice-captain'?' selected':'')+'>⭐ Vice-captain</option>' +
+                            '<option value="Marquee Player"'+(p.role==='Marquee Player'?' selected':'')+'>💎 Marquee</option>' +
+                            '<option value="Batsman"'+(p.role==='Batsman'?' selected':'')+'>🏏 Batsman</option>' +
+                            '<option value="Allrounder"'+(p.role==='Allrounder'?' selected':'')+'>🔄 Allrounder</option>' +
+                            '<option value="Bowler"'+(p.role==='Bowler'?' selected':'')+'>🎯 Bowler</option>' +
+                            '<option value="Wicketkeeper"'+(p.role==='Wicketkeeper'?' selected':'')+'>🧤 Wicketkeeper</option>' +
+                            '</select>' +
+                            '<span class="npl-upw" style="display:inline-flex;align-items:center;gap:6px;">' +
+                            '<input type="hidden" name="player_photo[]" class="npl-p-photo" value="'+(p.photo||'')+'">' +
+                            '<img class="npl-lp" src="'+(p.photo||'')+'" style="'+(p.photo?'width:36px;height:36px;object-fit:cover;border-radius:50%;':'display:none;width:36px;height:36px;')+'">' +
+                            '<button type="button" class="npl-btn npl-btn-secondary npl-up" style="font-size:11px;padding:4px 8px;">📷</button>' +
+                            '</span>' +
+                            '<button type="button" class="npl-btn npl-btn-secondary npl-rm-player" style="padding:6px 10px;color:#ef4444;">✕</button>' +
+                            '</div>';
+                        $list.append(row);
+                    });
+                }
+                $('#npl-player-count').text((players ? players.length : 0) + ' player'+((players && players.length!==1)?'s':''));
+                $('#npl-player-panel').show();
+            });
+            $('#npl-add-player-btn').on('click', function(){
+                if (currentTeamIdx === null) { alert('Please select a team first.'); return; }
+                var name = $('#npl-new-player-name').val().trim();
+                var role = $('#npl-new-player-role').val();
+                if (!name) { alert('Please enter player name.'); $('#npl-new-player-name').focus(); return; }
+                var i = $('#npl-player-list .npl-player-row-data').length;
+                var row = '<div class="npl-player-row npl-player-row-data">' +
+                    '<span class="npl-player-number">'+(i+1)+'</span>' +
+                    '<input type="text" class="npl-p-name npl-form-input" value="'+escapeHtml(name)+'" placeholder="Player Name" style="flex:2;">' +
+                    '<select class="npl-p-role npl-form-input" style="flex:1;">' +
+                    '<option value="Batsman"'+(role==='Batsman'?' selected':'')+'>🏏 Batsman</option>' +
+                    '<option value="Bowler"'+(role==='Bowler'?' selected':'')+'> Bowler</option>' +
+                    '<option value="Allrounder"'+(role==='Allrounder'?' selected':'')+'>🔄 Allrounder</option>' +
+                    '<option value="Wicketkeeper"'+(role==='Wicketkeeper'?' selected':'')+'>🧤 Wicketkeeper</option>' +
+                    '<option value="Captain"'+(role==='Captain'?' selected':'')+'>👑 Captain</option>' +
+                    '<option value="Vice-captain"'+(role==='Vice-captain'?' selected':'')+'>⭐ Vice-captain</option>' +
+                    '<option value="Marquee Player"'+(role==='Marquee Player'?' selected':'')+'>💎 Marquee Player</option>' +
+                    '</select>' +
+                    '<span class="npl-upw" style="display:inline-flex;align-items:center;gap:6px;">' +
+                    '<input type="hidden" name="player_photo[]" class="npl-p-photo" value="">' +
+                    '<img class="npl-lp" style="display:none;width:36px;height:36px;object-fit:cover;border-radius:50%;">' +
+                    '<button type="button" class="npl-btn npl-btn-secondary npl-up" style="font-size:11px;padding:4px 8px;">📷</button>' +
+                    '</span>' +
+                    '<button type="button" class="npl-btn npl-btn-secondary npl-rm-player" style="padding:6px 10px;color:#ef4444;">✕</button>' +
+                    '</div>';
+                $('#npl-player-list').append(row);
+                $('#npl-new-player-name').val('').focus();
+                $('#npl-no-players').hide();
+                saveCurrentTeamPlayers();
+            });
+            $(document).on('click', '.npl-rm-player', function(){
+                if (currentTeamIdx === null) return;
+                if (confirm('Remove this player?')) {
+                    $(this).closest('.npl-player-row-data').remove();
+                    $('#npl-player-list .npl-player-row-data').each(function(i){ $(this).find('.npl-player-number').text(i+1); });
+                    saveCurrentTeamPlayers();
+                }
+            });
+            $(document).on('input change', '.npl-p-name, .npl-p-role', function(){ if (currentTeamIdx !== null) saveCurrentTeamPlayers(); });
+            $('#npl-series-form').on('submit', function(){ saveCurrentTeamPlayers(); });
+            function escapeHtml(s){ return String(s||'').replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];}); }
+        });
+        </script>
+        <?php
+    }
+}
+
+/* ─────────────────────────────────────────────
+   6. FRONTEND SHORTCODE: [setopress_npl]
+   ─────────────────────────────────────────── */
+if (!function_exists('sc_npl_shortcode')) {
+    function sc_npl_shortcode() {
+        $d   = sc_get();
+        $sel = SC_NPL_SERIES;
+        if (!isset($d['series'][$sel])) return '<div style="padding:40px;text-align:center;background:#fff8e5;border:1px solid #e0c88a;border-radius:8px;">NPL data not initialized.</div>';
+
+        $info    = $d['series'][$sel];
+        $teams   = $info['teams'] ?? array();
+        $matches = array();
+        foreach ($d['matches'] as $m) { if (($m['series'] ?? '') === $sel) $matches[] = $m; }
+
+        $results  = array_filter($matches, function($m){ return !empty($m['winner']) || (!empty($m['team1_score']) && !empty($m['team2_score'])); });
+        $fixtures = array_filter($matches, function($m){ return empty($m['winner']) && empty($m['team1_score']); });
+
+        usort($results,  function($a,$b){ return strcmp($b['date']??'', $a['date']??''); });
+        usort($fixtures, function($a,$b){ return strcmp($a['date']??'', $b['date']??''); });
+
+        $table = sc_npl_points($d, $sel);
+
+        $total_runs = 0; $total_wickets = 0; $total_matches_count = count($results);
+        foreach ($results as $m) {
+            if (!empty($m['team1_score'])) { $total_runs += sc_parse_score($m['team1_score']); $total_wickets += sc_parse_wickets($m['team1_score']); }
+            if (!empty($m['team2_score'])) { $total_runs += sc_parse_score($m['team2_score']); $total_wickets += sc_parse_wickets($m['team2_score']); }
+        }
+
+        $all_players = array();
+        foreach ($teams as $tn => $td) {
+            foreach ($td['players'] ?? array() as $p) {
+                if (!empty($p['name'])) $all_players[] = array_merge($p, array('team' => $tn, 'team_logo' => $td['logo'] ?? '', 'team_color' => $td['color'] ?? '#c8102e'));
+            }
+        }
+        $all_players = sc_merge_players($all_players);
+        $p0 = $all_players[0] ?? array('name' => 'Top Batsman');
+        $p1 = $all_players[1] ?? array('name' => 'Top Bowler');
+        $p2 = $all_players[2] ?? array('name' => 'All-Rounder');
+        $p3 = $all_players[3] ?? array('name' => 'Wicket Keeper');
+
+        // PHP 7.0+ safe fallback for array_key_first
+        $team_keys_array = array_keys($teams);
+        $fair_play_team = !empty($team_keys_array) ? $team_keys_array[0] : 'Team';
+
+        ob_start();
+        ?>
+        <style>
+        :root { --npl-primary: #1a237e; --npl-primary-dark: #0d1542; --npl-accent: #00bfa5; --npl-accent-light: #64ffda; --npl-orange: #ff6b35; --npl-purple: #7c4dff; --npl-gradient-1: linear-gradient(135deg, #1a237e 0%, #0d1542 50%, #00bfa5 100%); --npl-gradient-2: linear-gradient(135deg, #ff6b35 0%, #f7931e 100%); --npl-bg: #f0f4f8; --npl-card-bg: #ffffff; --npl-text: #1a1a2e; --npl-text-light: #64748b; --npl-border: #e2e8f0; }
+        .npl-wrap { max-width: 100%; margin: 0 auto; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; background: var(--npl-bg); color: var(--npl-text); overflow-x: hidden; }
+        .npl-wrap * { box-sizing: border-box; }
+        .npl-nav { background: var(--npl-primary-dark); padding: 0 40px; display: flex; align-items: center; justify-content: space-between; height: 64px; position: sticky; top: 0; z-index: 1000; box-shadow: 0 2px 12px rgba(0,0,0,0.15); }
+        .npl-nav-logo { display: flex; align-items: center; gap: 12px; color: white; font-weight: 800; font-size: 22px; letter-spacing: 0.5px; }
+        .npl-nav-logo img { height: 44px; width: auto; }
+        .npl-nav-links { display: flex; gap: 32px; }
+        .npl-nav-links a { color: rgba(255,255,255,0.9); text-decoration: none; font-size: 14px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; transition: all 0.3s ease; position: relative; }
+        .npl-nav-links a:hover { color: var(--npl-accent); }
+        .npl-nav-links a::after { content: ''; position: absolute; bottom: -4px; left: 0; width: 0; height: 2px; background: var(--npl-accent); transition: width 0.3s ease; }
+        .npl-nav-links a:hover::after { width: 100%; }
+        .npl-hero { position: relative; background: var(--npl-gradient-1); min-height: 500px; overflow: hidden; padding: 40px; }
+        .npl-hero-content { position: relative; z-index: 2; max-width: 1400px; margin: 0 auto; display: grid; grid-template-columns: 1fr 380px; gap: 40px; align-items: stretch; }
+        .npl-hero-main { display: flex; flex-direction: column; gap: 20px; }
+        .npl-hero-featured { background: rgba(255,255,255,0.1); backdrop-filter: blur(10px); border-radius: 16px; overflow: hidden; border: 1px solid rgba(255,255,255,0.2); flex: 1; position: relative; }
+        .npl-hero-featured-img { width: 100%; height: 100%; min-height: 350px; object-fit: cover; display: flex; align-items: center; justify-content: center; background: linear-gradient(135deg, rgba(26,35,126,0.8) 0%, rgba(13,21,66,0.9) 100%); font-size: 120px; }
+        .npl-hero-featured-content { position: absolute; bottom: 0; left: 0; right: 0; padding: 30px; background: linear-gradient(transparent, rgba(0,0,0,0.9)); color: white; }
+        .npl-hero-badge { display: inline-flex; align-items: center; gap: 6px; background: var(--npl-orange); color: white; padding: 6px 14px; border-radius: 6px; font-size: 11px; font-weight: 800; text-transform: uppercase; margin-bottom: 12px; letter-spacing: 0.5px; }
+        .npl-hero-title { font-size: 28px; font-weight: 800; margin: 0 0 8px; line-height: 1.3; }
+        .npl-hero-meta { font-size: 13px; opacity: 0.8; }
+        .npl-hero-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 16px; }
+        .npl-hero-card { background: rgba(255,255,255,0.1); backdrop-filter: blur(10px); border-radius: 12px; overflow: hidden; border: 1px solid rgba(255,255,255,0.2); cursor: pointer; transition: all 0.3s ease; }
+        .npl-hero-card:hover { transform: translateY(-4px); background: rgba(255,255,255,0.15); }
+        .npl-hero-card-img { height: 120px; background: linear-gradient(135deg, rgba(124,77,255,0.6) 0%, rgba(26,35,126,0.8) 100%); display: flex; align-items: center; justify-content: center; font-size: 48px; }
+        .npl-hero-card-content { padding: 16px; color: white; }
+        .npl-hero-card-title { font-size: 13px; font-weight: 700; margin: 0 0 4px; line-height: 1.3; }
+        .npl-hero-card-meta { font-size: 11px; opacity: 0.7; }
+        .npl-hero-side { display: flex; flex-direction: column; gap: 12px; }
+        .npl-hero-side-title { color: white; font-size: 24px; font-weight: 800; margin: 0 0 8px; }
+        .npl-highlight-item { display: flex; gap: 12px; align-items: center; background: rgba(255,255,255,0.1); backdrop-filter: blur(10px); padding: 14px; border-radius: 10px; border: 1px solid rgba(255,255,255,0.2); cursor: pointer; transition: all 0.3s ease; }
+        .npl-highlight-item:hover { background: rgba(255,255,255,0.2); transform: translateX(4px); }
+        .npl-highlight-thumb { width: 70px; height: 50px; border-radius: 6px; overflow: hidden; flex-shrink: 0; background: linear-gradient(135deg, var(--npl-purple) 0%, var(--npl-primary) 100%); display: flex; align-items: center; justify-content: center; font-size: 24px; }
+        .npl-highlight-info h4 { font-size: 13px; font-weight: 700; margin: 0 0 4px; color: white; }
+        .npl-highlight-info p { font-size: 11px; color: rgba(255,255,255,0.7); margin: 0; }
+        .npl-section { padding: 50px 40px; max-width: 1400px; margin: 0 auto; }
+        .npl-section-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 30px; }
+        .npl-section-title { font-size: 28px; font-weight: 800; color: var(--npl-primary); margin: 0; display: flex; align-items: center; gap: 12px; }
+        .npl-section-title::before { content: ''; display: inline-block; width: 5px; height: 32px; background: var(--npl-gradient-2); border-radius: 3px; }
+        .npl-more-link { color: var(--npl-primary); text-decoration: none; font-weight: 600; font-size: 14px; display: flex; align-items: center; gap: 6px; transition: gap 0.3s ease; }
+        .npl-more-link:hover { gap: 10px; }
+        .npl-stats-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 24px; }
+        .npl-stat-card { border-radius: 16px; overflow: hidden; box-shadow: 0 4px 20px rgba(0,0,0,0.1); transition: all 0.3s ease; }
+        .npl-stat-card:hover { transform: translateY(-6px); box-shadow: 0 8px 30px rgba(0,0,0,0.15); }
+        .npl-stat-card.batting  { background: linear-gradient(135deg, #e63946 0%, #c1121f 100%); }
+        .npl-stat-card.bowling  { background: linear-gradient(135deg, #1d3557 0%, #457b9d 100%); }
+        .npl-stat-card.fielding { background: linear-gradient(135deg, #2a9d8f 0%, #52b788 100%); }
+        .npl-stat-img { height: 160px; position: relative; overflow: hidden; display: flex; align-items: center; justify-content: center; font-size: 80px; color: rgba(255,255,255,0.2); }
+        .npl-stat-overlay { position: absolute; bottom: 0; left: 0; right: 0; background: rgba(0,0,0,0.4); padding: 16px; display: flex; gap: 24px; justify-content: center; color: white; font-size: 13px; }
+        .npl-stat-overlay div { text-align: center; }
+        .npl-stat-overlay strong { display: block; font-size: 20px; font-weight: 800; margin-bottom: 4px; }
+        .npl-stat-label { padding: 16px; text-align: center; font-size: 15px; font-weight: 800; color: white; text-transform: uppercase; letter-spacing: 1px; }
+        .npl-performers-grid { display: grid; grid-template-columns: repeat(6, 1fr); gap: 20px; }
+        .npl-performer-card { background: var(--npl-card-bg); border-radius: 16px; overflow: hidden; box-shadow: 0 4px 20px rgba(0,0,0,0.08); transition: all 0.3s ease; }
+        .npl-performer-card:hover { transform: translateY(-8px); box-shadow: 0 12px 40px rgba(0,0,0,0.15); }
+        .npl-performer-img { height: 200px; position: relative; overflow: hidden; background: linear-gradient(135deg, var(--npl-primary) 0%, var(--npl-purple) 100%); display: flex; align-items: center; justify-content: center; font-size: 80px; color: rgba(255,255,255,0.2); }
+        .npl-performer-badge { position: absolute; top: 12px; left: 12px; background: var(--npl-orange); color: white; padding: 6px 12px; border-radius: 6px; font-size: 10px; font-weight: 800; text-transform: uppercase; letter-spacing: 0.5px; }
+        .npl-performer-team { position: absolute; top: 12px; right: 12px; width: 36px; height: 36px; border-radius: 50%; background: white; padding: 6px; box-shadow: 0 2px 8px rgba(0,0,0,0.2); }
+        .npl-performer-team img { width: 100%; height: 100%; object-fit: contain; }
+        .npl-performer-content { padding: 18px; text-align: center; }
+        .npl-performer-name { font-size: 15px; font-weight: 800; color: var(--npl-primary); margin: 0 0 6px; text-transform: uppercase; }
+        .npl-performer-award { font-size: 11px; color: var(--npl-orange); font-weight: 700; text-transform: uppercase; margin-bottom: 14px; letter-spacing: 0.5px; }
+        .npl-performer-stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+        .npl-perf-stat { background: #f8f9fa; padding: 10px 6px; border-radius: 8px; text-align: center; }
+        .npl-perf-val { font-size: 14px; font-weight: 800; color: var(--npl-accent); display: block; }
+        .npl-perf-label { font-size: 9px; color: var(--npl-text-light); text-transform: uppercase; margin-top: 2px; }
+        .npl-news-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 20px; }
+        .npl-news-card { background: var(--npl-card-bg); border-radius: 12px; overflow: hidden; box-shadow: 0 2px 12px rgba(0,0,0,0.08); transition: all 0.3s ease; cursor: pointer; }
+        .npl-news-card:hover { transform: translateY(-4px); box-shadow: 0 8px 24px rgba(0,0,0,0.12); }
+        .npl-news-img { height: 160px; background: linear-gradient(135deg, var(--npl-primary) 0%, var(--npl-purple) 100%); display: flex; align-items: center; justify-content: center; font-size: 60px; background-size: cover; background-position: center; }
+        .npl-news-content { padding: 16px; }
+        .npl-news-title { font-size: 14px; font-weight: 700; margin: 0 0 8px; line-height: 1.4; color: var(--npl-text); }
+        .npl-news-meta { font-size: 12px; color: var(--npl-text-light); }
+        .npl-videos-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 20px; }
+        .npl-video-card { background: var(--npl-primary-dark); border-radius: 12px; overflow: hidden; position: relative; cursor: pointer; transition: all 0.3s ease; }
+        .npl-video-card:hover { transform: scale(1.02); }
+        .npl-video-thumb { height: 140px; background: linear-gradient(135deg, var(--npl-primary) 0%, var(--npl-purple) 100%); display: flex; align-items: center; justify-content: center; font-size: 48px; position: relative; }
+        .npl-play-btn { width: 48px; height: 48px; background: rgba(255,255,255,0.95); border-radius: 50%; display: flex; align-items: center; justify-content: center; color: var(--npl-primary); font-size: 20px; box-shadow: 0 4px 12px rgba(0,0,0,0.3); }
+        .npl-video-duration { position: absolute; bottom: 8px; right: 8px; background: rgba(0,0,0,0.8); color: white; padding: 3px 8px; border-radius: 4px; font-size: 11px; font-weight: 600; }
+        .npl-video-content { padding: 14px; color: white; }
+        .npl-video-title { font-size: 13px; font-weight: 700; margin: 0 0 6px; line-height: 1.3; }
+        .npl-video-meta { font-size: 11px; opacity: 0.7; }
+        .npl-match-report { background: white; border-radius: 16px; padding: 40px; box-shadow: 0 4px 20px rgba(0,0,0,0.08); margin-bottom: 50px; }
+        .npl-match-report-title { font-size: 24px; font-weight: 800; color: var(--npl-primary); margin: 0 0 16px; }
+        .npl-match-report-text { font-size: 15px; line-height: 1.7; color: var(--npl-text-light); margin-bottom: 24px; }
+        .npl-btn-primary { display: inline-flex; align-items: center; gap: 8px; padding: 12px 28px; background: var(--npl-gradient-1); color: white; border: none; border-radius: 8px; font-weight: 700; font-size: 14px; cursor: pointer; transition: all 0.3s ease; text-decoration: none; }
+        .npl-btn-primary:hover { transform: translateY(-2px); box-shadow: 0 6px 20px rgba(26,35,126,0.4); }
+        .npl-winners-scroll { display: flex; gap: 24px; overflow-x: auto; padding: 20px 0; scrollbar-width: thin; scrollbar-color: var(--npl-primary) var(--npl-bg); }
+        .npl-winners-scroll::-webkit-scrollbar { height: 8px; }
+        .npl-winners-scroll::-webkit-scrollbar-track { background: var(--npl-bg); border-radius: 4px; }
+        .npl-winners-scroll::-webkit-scrollbar-thumb { background: var(--npl-primary); border-radius: 4px; }
+        .npl-winner-card { flex: 0 0 280px; background: white; border-radius: 12px; padding: 24px; text-align: center; box-shadow: 0 2px 12px rgba(0,0,0,0.08); transition: all 0.3s ease; }
+        .npl-winner-card:hover { transform: translateY(-4px); box-shadow: 0 8px 24px rgba(0,0,0,0.12); }
+        .npl-winner-year { font-size: 32px; font-weight: 900; color: var(--npl-primary); margin-bottom: 8px; }
+        .npl-winner-team { font-size: 16px; font-weight: 700; color: var(--npl-text); }
+        .npl-tabs { display: flex; background: white; border-bottom: 2px solid var(--npl-border); padding: 0 40px; overflow-x: auto; position: sticky; top: 64px; z-index: 99; box-shadow: 0 2px 8px rgba(0,0,0,0.05); }
+        .npl-tab { padding: 18px 24px; background: transparent; border: none; cursor: pointer; font-weight: 700; color: var(--npl-text-light); font-size: 14px; white-space: nowrap; transition: all 0.3s ease; border-bottom: 3px solid transparent; margin-bottom: -2px; }
+        .npl-tab.active { color: var(--npl-primary); border-bottom-color: var(--npl-primary); }
+        .npl-tab:hover { color: var(--npl-primary); }
+        .npl-panel { display: none; }
+        .npl-panel.active { display: block; }
+        .npl-footer { background: var(--npl-primary-dark); color: white; padding: 60px 40px 30px; margin-top: 80px; }
+        .npl-footer-inner { max-width: 1400px; margin: 0 auto; }
+        .npl-sponsors { text-align: center; padding-bottom: 40px; border-bottom: 1px solid rgba(255,255,255,0.1); margin-bottom: 40px; }
+        .npl-sponsor-label { font-size: 11px; color: rgba(255,255,255,0.4); text-transform: uppercase; letter-spacing: 2px; margin-bottom: 20px; }
+        .npl-sponsor-item { display: inline-block; background: rgba(255,255,255,0.05); padding: 16px 32px; border-radius: 8px; font-weight: 700; font-size: 14px; margin: 0 8px 8px; }
+        .npl-footer-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 40px; margin-bottom: 40px; }
+        .npl-footer-col h4 { font-size: 13px; font-weight: 800; text-transform: uppercase; letter-spacing: 1px; margin: 0 0 20px; color: var(--npl-accent); }
+        .npl-footer-col a { display: block; color: rgba(255,255,255,0.6); text-decoration: none; font-size: 13px; margin-bottom: 12px; transition: all 0.3s ease; }
+        .npl-footer-col a:hover { color: white; padding-left: 4px; }
+        .npl-footer-bottom { display: flex; justify-content: space-between; align-items: center; padding-top: 30px; border-top: 1px solid rgba(255,255,255,0.1); font-size: 12px; color: rgba(255,255,255,0.4); }
+        @media (max-width: 1200px) { .npl-performers-grid { grid-template-columns: repeat(3, 1fr); } .npl-news-grid, .npl-videos-grid { grid-template-columns: repeat(2, 1fr); } }
+        @media (max-width: 968px) { .npl-hero-content { grid-template-columns: 1fr; } .npl-hero-side { order: -1; } .npl-stats-grid { grid-template-columns: 1fr; } .npl-footer-grid { grid-template-columns: repeat(2, 1fr); } }
+        @media (max-width: 768px) { .npl-nav { padding: 0 20px; } .npl-nav-links { display: none; } .npl-section { padding: 40px 20px; } .npl-performers-grid { grid-template-columns: repeat(2, 1fr); } .npl-news-grid, .npl-videos-grid { grid-template-columns: 1fr; } .npl-hero { padding: 20px; min-height: auto; } }
+        </style>
+
+        <div class="npl-wrap">
+            <nav class="npl-nav">
+                <div class="npl-nav-logo">
+                    <?php if (!empty($info['logo'])) : ?><img src="<?php echo esc_url($info['logo']); ?>" alt="NPL"><?php endif; ?>
+                    <span>NEPAL PREMIER LEAGUE</span>
+                </div>
+                <div class="npl-nav-links">
+                    <a href="#news-section">News</a>
+                    <a href="#videos">Videos</a>
+                    <a href="#matches">Matches</a>
+                    <a href="#points">Points Table</a>
+                    <a href="#teams">Teams</a>
+                    <a href="#more">More</a>
+                </div>
+            </nav>
+
+            <section class="npl-hero" id="news">
+                <div class="npl-hero-content">
+                    <div class="npl-hero-main">
+                        <div class="npl-hero-featured">
+                            <div class="npl-hero-featured-img"></div>
+                            <div class="npl-hero-featured-content">
+                                <div class="npl-hero-badge">Press Release</div>
+                                <h1 class="npl-hero-title"><?php echo !empty($results) ? esc_html(reset($results)['team1'] . ' vs ' . reset($results)['team2']) : 'NPL ' . esc_html($info['season'] ?? '2026') . ' Season Begins'; ?></h1>
+                                <p class="npl-hero-meta"><?php echo !empty($results) ? esc_html(reset($results)['result_text'] ?? 'Match Result') : 'Get ready for exciting cricket action'; ?></p>
+                            </div>
+                        </div>
+                        <div class="npl-hero-grid">
+                            <?php for($i=0; $i<4 && isset($results[$i]); $i++): $m = $results[$i]; ?>
+                            <div class="npl-hero-card">
+                                <div class="npl-hero-card-img">🏏</div>
+                                <div class="npl-hero-card-content">
+                                    <h3 class="npl-hero-card-title"><?php echo esc_html($m['team1'] . ' vs ' . $m['team2']); ?></h3>
+                                    <p class="npl-hero-card-meta"><?php echo esc_html($m['result_text'] ?? 'Match Highlights'); ?></p>
+                                </div>
+                            </div>
+                            <?php endfor; ?>
+                        </div>
+                    </div>
+                    <div class="npl-hero-side">
+                        <h2 class="npl-hero-side-title">NPL <?php echo esc_html($info['season'] ?? '2026'); ?> Highlights</h2>
+                        <?php foreach(array_slice($results, 0, 4) as $m): ?>
+                        <div class="npl-highlight-item">
+                            <div class="npl-highlight-thumb">🎬</div>
+                            <div class="npl-highlight-info">
+                                <h4><?php echo esc_html($m['team1'] . ' vs ' . $m['team2']); ?></h4>
+                                <p><?php echo esc_html($m['result_text'] ?? 'Match Highlights'); ?></p>
+                            </div>
+                        </div>
+                        <?php endforeach; ?>
+                    </div>
+                </div>
+            </section>
+
+            <section class="npl-section" id="news-section">
+                <div class="npl-section-header">
+                    <h2 class="npl-section-title">Latest News</h2>
+                    <a href="#" class="npl-more-link">More →</a>
+                </div>
+                <div class="npl-news-grid">
+                    <?php 
+                    $saved_news = $d['news'] ?? array();
+                    if (!empty($saved_news)) {
+                        usort($saved_news, function($a, $b) { return strcmp($b['date'] ?? '', $a['date'] ?? ''); });
+                        $display_news = array_slice($saved_news, 0, 4);
+                        foreach ($display_news as $n) : 
+                            $cat_label = $n['category'] === 'match' ? 'Match Report' : ($n['category'] === 'update' ? 'Update' : 'Press Release');
+                            $cat_color = $n['category'] === 'match' ? '#16a34a' : ($n['category'] === 'update' ? '#1e3a8a' : '#dc2626');
+                    ?>
+                    <div class="npl-news-card">
+                        <?php if (!empty($n['image'])) : ?>
+                            <div class="npl-news-img" style="background-image: url('<?php echo esc_url($n['image']); ?>');"></div>
+                        <?php else : ?>
+                            <div class="npl-news-img">📰</div>
+                        <?php endif; ?>
+                        <div class="npl-news-content">
+                            <span style="display:inline-block; background:<?php echo $cat_color; ?>; color:white; padding:2px 8px; border-radius:4px; font-size:10px; font-weight:700; margin-bottom:8px;"><?php echo esc_html($cat_label); ?></span>
+                            <h3 class="npl-news-title"><?php echo esc_html($n['title']); ?></h3>
+                            <p class="npl-news-meta"><?php echo esc_html(date('d M Y', strtotime($n['date']))); ?></p>
+                        </div>
+                    </div>
+                    <?php 
+                        endforeach; 
+                    } else { 
+                    ?>
+                    <div style="grid-column: 1/-1; text-align:center; padding:40px; color:var(--npl-text-light); background:white; border-radius:12px;">
+                        <p>No news articles available yet. Add some in the NPL Admin Panel!</p>
+                    </div>
+                    <?php } ?>
+                </div>
+            </section>
+
+            <section class="npl-section">
+                <div class="npl-section-header">
+                    <h2 class="npl-section-title">Season's Top Performers</h2>
+                </div>
+                <div class="npl-performers-grid">
+                    <?php
+                    $performers = array(
+                        array('award'=>'Orange Cap',   'name'=>$p0['name'],'stats'=>array('M'=>10,'Runs'=>450,'Avg'=>45.0)),
+                        array('award'=>'Purple Cap',   'name'=>$p1['name'],'stats'=>array('M'=>10,'Wkts'=>18,'Econ'=>7.2)),
+                        array('award'=>'Fair Play',    'name'=>$fair_play_team,'stats'=>array('Pts'=>10,'M'=>10,'Score'=>9.5)),
+                        array('award'=>'Highest Score','name'=>$p2['name'],'stats'=>array('Runs'=>112,'Balls'=>58,'4s'=>12)),
+                        array('award'=>'Best Bowling', 'name'=>$p3['name'],'stats'=>array('Fig'=>'5/18','Ov'=>4,'Econ'=>4.5)),
+                        array('award'=>'Most Valuable','name'=>$p0['name'],'stats'=>array('Pts'=>450,'MVP'=>285,'Avg'=>45.0)),
+                    );
+                    foreach ($performers as $pf) :
+                        $team_data = $teams[$pf['name']] ?? reset($teams);
+                    ?>
+                    <div class="npl-performer-card">
+                        <div class="npl-performer-img">
+                            <span style="font-size:80px;opacity:0.3;">👤</span>
+                            <span class="npl-performer-badge"><?php echo esc_html($pf['award']); ?></span>
+                            <?php if(!empty($team_data) && !empty($team_data['logo'])): ?>
+                            <div class="npl-performer-team"><img src="<?php echo esc_url($team_data['logo']); ?>" alt=""></div>
+                            <?php endif; ?>
+                        </div>
+                        <div class="npl-performer-content">
+                            <h3 class="npl-performer-name"><?php echo esc_html($pf['name']); ?></h3>
+                            <div class="npl-performer-award"><?php echo esc_html($pf['award']); ?></div>
+                            <div class="npl-performer-stats">
+                                <?php foreach ($pf['stats'] as $k => $v) : ?>
+                                <div class="npl-perf-stat"><span class="npl-perf-val"><?php echo esc_html($v); ?></span><span class="npl-perf-label"><?php echo esc_html($k); ?></span></div>
+                                <?php endforeach; ?>
+                            </div>
+                        </div>
+                    </div>
+                    <?php endforeach; ?>
+                </div>
+            </section>
+
+            <section class="npl-section" id="videos">
+                <div class="npl-section-header">
+                    <h2 class="npl-section-title">Latest Videos</h2>
+                    <a href="#" class="npl-more-link">More →</a>
+                </div>
+                <div class="npl-videos-grid">
+                    <?php for($i=0; $i<4; $i++): ?>
+                    <div class="npl-video-card">
+                        <div class="npl-video-thumb"><div class="npl-play-btn">▶</div><span class="npl-video-duration">0<?php echo ($i+1); ?>:4<?php echo $i; ?></span></div>
+                        <div class="npl-video-content">
+                            <h3 class="npl-video-title">Magic Moments - Match <?php echo ($i+1); ?> Highlights</h3>
+                            <p class="npl-video-meta"><?php echo date('d M Y'); ?> · <?php echo ($i+1); ?>M views</p>
+                        </div>
+                    </div>
+                    <?php endfor; ?>
+                </div>
+            </section>
+
+            <section class="npl-section">
+                <div class="npl-match-report">
+                    <h2 class="npl-match-report-title">NPL <?php echo esc_html($info['season'] ?? '2026'); ?> Final: Match Report</h2>
+                    <p class="npl-match-report-text">Experience the thrilling conclusion of the Nepal Premier League as the champions were crowned in a spectacular final match. The tournament showcased exceptional talent from across Nepal, with record-breaking performances and unforgettable moments that will be remembered for years to come.</p>
+                    <a href="#" class="npl-btn-primary">Read More →</a>
+                </div>
+            </section>
+
+            <section class="npl-section">
+                <div class="npl-section-header">
+                    <h2 class="npl-section-title">Past Winners</h2>
+                </div>
+                <div class="npl-winners-scroll">
+                    <?php for($year=2026; $year>=2023; $year--):
+                        $team_keys = array_keys($teams);
+                        $winner = $team_keys[($year-2023) % count($team_keys)] ?? 'Champions';
+                    ?>
+                    <div class="npl-winner-card">
+                        <div class="npl-winner-year"><?php echo $year; ?></div>
+                        <div class="npl-winner-team"><?php echo esc_html($winner); ?></div>
+                    </div>
+                    <?php endfor; ?>
+                </div>
+            </section>
+
+            <div class="npl-tabs">
+                <button class="npl-tab active" onclick="nplTab(this,'points')">📊 Points Table</button>
+                <button class="npl-tab" onclick="nplTab(this,'fixtures')">📅 Fixtures</button>
+                <button class="npl-tab" onclick="nplTab(this,'results')">✅ Results</button>
+                <button class="npl-tab" onclick="nplTab(this,'teams')">👥 Teams</button>
+            </div>
+
+          <div id="npl-points" class="npl-panel active">
+    <section class="npl-section" id="points">
+        <?php
+        // Super detailed debug
+        $all_matches = $d['matches'] ?? array();
+        $matches_for_series = array();
+        $matches_with_scores = array();
+        $series_name_constant = SC_NPL_SERIES;
+        
+        echo '<pre style="background:#fef3c7; padding:15px; border:2px solid #f59e0b; border-radius:8px; font-size:11px; margin-bottom:20px;">';
+        echo '<strong>🔍 SUPER DEBUGGER:</strong><br><br>';
+        echo 'Series Constant (SC_NPL_SERIES): <strong>' . $series_name_constant . '</strong><br>';
+        echo 'Series we are filtering: <strong>' . esc_html($sel) . '</strong><br>';
+        echo 'Total matches in database: <strong>' . count($all_matches) . '</strong><br><br>';
+        
+        // Show first 3 matches
+        if (!empty($all_matches)) {
+            echo '<strong>First 3 matches in database:</strong><br>';
+            $count = 0;
+            foreach ($all_matches as $match_id => $m) {
+                if ($count >= 3) break;
+                echo '<br>--- Match ' . ($count + 1) . ' ---<br>';
+                echo 'ID: ' . $match_id . '<br>';
+                echo 'Series: "' . ($m['series'] ?? 'EMPTY') . '"<br>';
+                echo 'Team1: "' . ($m['team1'] ?? 'EMPTY') . '"<br>';
+                echo 'Team2: "' . ($m['team2'] ?? 'EMPTY') . '"<br>';
+                echo 'T1 Score: "' . ($m['team1_score'] ?? 'EMPTY') . '"<br>';
+                echo 'T2 Score: "' . ($m['team2_score'] ?? 'EMPTY') . '"<br>';
+                echo 'Winner: "' . ($m['winner'] ?? 'EMPTY') . '"<br>';
+                $count++;
+            }
+        }
+        
+        echo '<br><br>';
+        
+        // Count matches for this series
+        foreach ($all_matches as $m) {
+            if (($m['series'] ?? '') === $sel) {
+                $matches_for_series[] = $m;
+                if (!empty($m['team1_score']) && !empty($m['team2_score'])) {
+                    $matches_with_scores[] = $m;
+                }
+            }
+        }
+        
+        echo 'Matches for series "' . esc_html($sel) . '": <strong>' . count($matches_for_series) . '</strong><br>';
+        echo 'Matches WITH scores: <strong style="color:' . (count($matches_with_scores) > 0 ? '#10b981' : '#ef4444') . ';">' . count($matches_with_scores) . '</strong><br>';
+        
+        if (count($matches_with_scores) > 0) {
+            echo '<br><strong style="color:#10b981;">✅ Found matches with scores!</strong><br>';
+        } else {
+            echo '<br><strong style="color:#ef4444;">❌ NO MATCHES WITH SCORES!</strong><br>';
+            echo 'Possible reasons:<br>';
+            echo '1. Scores not saved in database<br>';
+            echo '2. Series name mismatch<br>';
+            echo '3. Team names don\'t match exactly<br>';
+        }
+        
+        echo '</pre>';
+        ?>
+        
+        <!-- Rest of the points table code remains the same -->
+        <div style="background:white;border-radius:12px;overflow:hidden;box-shadow:0 2px 12px rgba(0,0,0,0.08);">
+            <table style="width:100%;border-collapse:collapse;font-size:14px;">
+                <thead style="background:#f8f9fa;border-bottom:2px solid var(--npl-border);">
+                    <tr>
+                        <th style="padding:14px;text-align:center;font-weight:700;color:var(--npl-text-light);width:50px;">#</th>
+                        <th style="padding:14px;text-align:left;font-weight:700;color:var(--npl-text-light);">Team</th>
+                        <th style="padding:14px;text-align:center;font-weight:700;color:var(--npl-text-light);width:50px;">P</th>
+                        <th style="padding:14px;text-align:center;font-weight:700;color:var(--npl-text-light);width:50px;">W</th>
+                        <th style="padding:14px;text-align:center;font-weight:700;color:var(--npl-text-light);width:50px;">L</th>
+                        <th style="padding:14px;text-align:center;font-weight:700;color:var(--npl-text-light);width:60px;">Pts</th>
+                        <th style="padding:14px;text-align:center;font-weight:700;color:var(--npl-text-light);width:80px;">NRR</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <?php if ($table) : $pos = 1; foreach ($table as $r) : ?>
+                    <tr style="border-bottom:1px solid var(--npl-border);<?php echo $pos<=4?'background:rgba(0,191,165,0.05)':''; ?>">
+                        <td style="padding:14px;text-align:center;font-weight:700;"><?php echo $pos; ?></td>
+                        <td style="padding:14px;display:flex;align-items:center;gap:12px;">
+                            <?php if (!empty($r['logo'])) : ?><img src="<?php echo esc_url($r['logo']); ?>" style="width:28px;height:28px;object-fit:contain;"><?php endif; ?>
+                            <span style="font-weight:700;"><?php echo esc_html($r['name']); ?></span>
+                            <?php if ($pos<=4) : ?><span style="background:var(--npl-accent);color:white;padding:2px 8px;border-radius:4px;font-size:10px;font-weight:700;">Q</span><?php endif; ?>
+                        </td>
+                        <td style="padding:14px;text-align:center;"><?php echo (int)$r['p']; ?></td>
+                        <td style="padding:14px;text-align:center;"><?php echo (int)$r['w']; ?></td>
+                        <td style="padding:14px;text-align:center;"><?php echo (int)$r['l']; ?></td>
+                        <td style="padding:14px;text-align:center;font-weight:800;"><?php echo (int)$r['pts']; ?></td>
+                        <td style="padding:14px;text-align:center;"><?php echo number_format($r['nrr'], 3); ?></td>
+                    </tr>
+                    <?php $pos++; endforeach; endif; ?>
+                </tbody>
+            </table>
+        </div>
+    </section>
+</div>
+
+            <div id="npl-fixtures" class="npl-panel">
+                <section class="npl-section" id="matches">
+                    <div class="npl-section-header"><h2 class="npl-section-title">Upcoming Fixtures</h2></div>
+                    <?php if (!empty($fixtures)) : foreach (array_slice($fixtures, 0, 6) as $m) :
+                        $l1 = sc_logo($info, $m['team1']); $l2 = sc_logo($info, $m['team2']);
+                    ?>
+                    <div style="background:white;border-radius:12px;padding:20px;margin-bottom:16px;box-shadow:0 2px 8px rgba(0,0,0,0.06);display:flex;align-items:center;justify-content:space-between;gap:20px;">
+                        <div style="display:flex;align-items:center;gap:16px;flex:1;">
+                            <img src="<?php echo esc_url($l1 ?: 'data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><rect fill="%231a237e" width="100" height="100"/></svg>'); ?>" style="width:48px;height:48px;object-fit:contain;">
+                            <span style="font-weight:700;font-size:16px;"><?php echo esc_html($m['team1']); ?></span>
+                        </div>
+                        <div style="text-align:center;padding:0 20px;"><div style="font-size:12px;color:var(--npl-text-light);margin-bottom:4px;">VS</div><div style="font-size:13px;color:var(--npl-text-light);"><?php echo esc_html($m['date']); ?></div></div>
+                        <div style="display:flex;align-items:center;gap:16px;flex:1;justify-content:flex-end;">
+                            <span style="font-weight:700;font-size:16px;"><?php echo esc_html($m['team2']); ?></span>
+                            <img src="<?php echo esc_url($l2 ?: 'data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><rect fill="%2300bfa5" width="100" height="100"/></svg>'); ?>" style="width:48px;height:48px;object-fit:contain;">
+                        </div>
+                    </div>
+                    <?php endforeach; else : ?>
+                    <div style="padding:40px;text-align:center;color:var(--npl-text-light);background:white;border-radius:12px;">No upcoming fixtures.</div>
+                    <?php endif; ?>
+                </section>
+            </div>
+
+            <div id="npl-results" class="npl-panel">
+                <section class="npl-section">
+                    <div class="npl-section-header"><h2 class="npl-section-title">Match Results</h2></div>
+                    <?php if (!empty($results)) : foreach (array_slice($results, 0, 6) as $m) :
+                        $l1 = sc_logo($info, $m['team1']); $l2 = sc_logo($info, $m['team2']);
+                    ?>
+                    <div style="background:white;border-radius:12px;padding:20px;margin-bottom:16px;box-shadow:0 2px 8px rgba(0,0,0,0.06);">
+                        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;">
+                            <span style="font-size:13px;color:var(--npl-text-light);"><?php echo esc_html($m['date']); ?></span>
+                            <?php if (!empty($m['result_text'])) : ?><span style="background:var(--npl-accent);color:white;padding:4px 12px;border-radius:6px;font-size:12px;font-weight:700;"><?php echo esc_html($m['result_text']); ?></span><?php endif; ?>
+                        </div>
+                        <div style="display:flex;align-items:center;gap:16px;">
+                            <div style="flex:1;display:flex;align-items:center;gap:12px;">
+                                <img src="<?php echo esc_url($l1); ?>" style="width:40px;height:40px;object-fit:contain;">
+                                <div><div style="font-weight:700;"><?php echo esc_html($m['team1']); ?></div><div style="font-size:18px;font-weight:800;color:var(--npl-primary);"><?php echo esc_html($m['team1_score'] ?? '-'); ?></div></div>
+                            </div>
+                            <div style="color:var(--npl-text-light);font-weight:700;">VS</div>
+                            <div style="flex:1;display:flex;align-items:center;gap:12px;justify-content:flex-end;">
+                                <div style="text-align:right;"><div style="font-weight:700;"><?php echo esc_html($m['team2']); ?></div><div style="font-size:18px;font-weight:800;color:var(--npl-primary);"><?php echo esc_html($m['team2_score'] ?? '-'); ?></div></div>
+                                <img src="<?php echo esc_url($l2); ?>" style="width:40px;height:40px;object-fit:contain;">
+                            </div>
+                        </div>
+                    </div>
+                    <?php endforeach; else : ?>
+                    <div style="padding:40px;text-align:center;color:var(--npl-text-light);background:white;border-radius:12px;">No results yet.</div>
+                    <?php endif; ?>
+                </section>
+            </div>
+
+            <div id="npl-teams" class="npl-panel">
+                <section class="npl-section" id="teams">
+                    <div class="npl-section-header"><h2 class="npl-section-title">NPL Franchise Teams</h2></div>
+                    <div style="display:grid;grid-template-columns:repeat(auto-fit, minmax(280px, 1fr));gap:20px;">
+                        <?php foreach ($teams as $tname => $t) :
+                            $player_count = count(sc_merge_players($t['players'] ?? array()));
+                        ?>
+                        <div style="background:white;border-radius:12px;overflow:hidden;box-shadow:0 2px 12px rgba(0,0,0,0.08);transition:all 0.3s ease;">
+                            <div style="height:140px;background:linear-gradient(135deg, <?php echo esc_attr($t['color'] ?? '#c8102e'); ?> 0%, <?php echo esc_attr($t['color'] ?? '#c8102e'); ?>dd 100%);display:flex;align-items:center;justify-content:center;">
+                                <?php if (!empty($t['logo'])) : ?>
+                                <img src="<?php echo esc_url($t['logo']); ?>" style="width:100px;height:100px;object-fit:contain;background:white;border-radius:50%;padding:10px;box-shadow:0 4px 12px rgba(0,0,0,0.2);">
+                                <?php else : ?>
+                                <span style="font-size:60px;opacity:0.3;">🏏</span>
+                                <?php endif; ?>
+                            </div>
+                            <div style="padding:20px;text-align:center;">
+                                <h3 style="margin:0 0 8px;font-size:18px;font-weight:800;"><?php echo esc_html($tname); ?></h3>
+                                <p style="margin:0;color:var(--npl-text-light);font-size:13px;"><?php echo $player_count; ?> Players</p>
+                            </div>
+                        </div>
+                        <?php endforeach; ?>
+                    </div>
+                </section>
+            </div>
+
+            <footer class="npl-footer" id="more">
+                <div class="npl-footer-inner">
+                    <div class="npl-sponsors">
+                        <div class="npl-sponsor-label">Title Sponsor</div>
+                        <div class="npl-sponsor-item"> NPL Official</div>
+                        <div class="npl-sponsor-label" style="margin-top:30px;">Premier Partners</div>
+                        <div><div class="npl-sponsor-item">Partner 1</div><div class="npl-sponsor-item">Partner 2</div><div class="npl-sponsor-item">Partner 3</div></div>
+                    </div>
+                    <div class="npl-footer-grid">
+                        <div class="npl-footer-col"><h4>About NPL</h4><a href="#">Governing Council</a><a href="#">Anti Corruption</a><a href="#">Anti Doping</a><a href="#">Code of Conduct</a></div>
+                        <div class="npl-footer-col"><h4>Guidelines</h4><a href="#">Match Playing Conditions</a><a href="#">Media Regulations</a><a href="#">Terms & Conditions</a></div>
+                        <div class="npl-footer-col"><h4>Teams</h4><?php foreach (array_slice(array_keys($teams), 0, 6) as $tn) : ?><a href="#teams"><?php echo esc_html($tn); ?></a><?php endforeach; ?></div>
+                        <div class="npl-footer-col"><h4>Contact Us</h4><a href="#">Nepal Cricket Association</a><a href="#">Kathmandu, Nepal</a><a href="#">info@npl.com.np</a><a href="#">+977-1-XXXXXXX</a></div>
+                    </div>
+                    <div class="npl-footer-bottom"><div>© NPL <?php echo esc_html($info['season'] ?? '2026'); ?>. All rights reserved. | Privacy Policy | Terms & Conditions</div></div>
+                </div>
+            </footer>
+        </div>
+
+        <script>
+        function nplTab(b,p){
+            var x=b.closest('.npl-wrap');
+            x.querySelectorAll('.npl-tab').forEach(function(t){t.classList.remove('active')});
+            b.classList.add('active');
+            x.querySelectorAll('.npl-panel').forEach(function(t){t.classList.remove('active')});
+            var t=x.querySelector('#npl-'+p);
+            if(t){ t.classList.add('active'); t.scrollIntoView({behavior:'smooth',block:'start'}); }
+        }
+        </script>
+        <?php
+        return ob_get_clean();
+    }
+}
+add_shortcode('setopress_npl', 'sc_npl_shortcode');
+
+/* ─────────────────────────────────────────────
+   7. NEWS PAGE SHORTCODE: [setopress_npl_news]
+   ──────────────────────────────────────────── */
+if (!function_exists('sc_npl_news_shortcode')) {
+    function sc_npl_news_shortcode() {
+        $d   = sc_get();
+        $sel = SC_NPL_SERIES;
+        if (!isset($d['series'][$sel])) return '<div style="padding:40px;text-align:center;">NPL data not initialized.</div>';
+
+        $info    = $d['series'][$sel];
+        $teams   = $info['teams'] ?? array();
+        $matches = array();
+        foreach ($d['matches'] as $m) { if (($m['series'] ?? '') === $sel) $matches[] = $m; }
+
+        $results  = array_filter($matches, function($m){ return !empty($m['winner']) || (!empty($m['team1_score']) && !empty($m['team2_score'])); });
+        $fixtures = array_filter($matches, function($m){ return empty($m['winner']) && empty($m['team1_score']); });
+
+        usort($results,  function($a,$b){ return strcmp($b['date']??'', $a['date']??''); });
+        usort($fixtures, function($a,$b){ return strcmp($a['date']??'', $b['date']??''); });
+
+        $saved_news = $d['news'] ?? array();
+        $news_items = array();
+        
+        if (!empty($saved_news)) {
+            usort($saved_news, function($a, $b) { return strcmp($b['date'] ?? '', $a['date'] ?? ''); });
+            foreach ($saved_news as $n) {
+                $news_items[] = array(
+                    'category' => $n['category'] === 'match' ? 'Match Reports' : ($n['category'] === 'update' ? 'Updates' : 'Press Releases'),
+                    'title'    => $n['title'] ?? 'Untitled News',
+                    'date'     => $n['date'] ?? date('Y-m-d'),
+                    'time'     => $n['time'] ?? '12:00',
+                    'excerpt'  => $n['excerpt'] ?? '',
+                    'image'    => $n['image'] ?? '',
+                    'team1'    => $n['team1'] ?? '',
+                    'team2'    => $n['team2'] ?? '',
+                    'type'     => $n['category'] ?? 'press'
+                );
+            }
+        } else {
+            foreach ($results as $m) {
+                $news_items[] = array(
+                    'category' => 'Match Reports',
+                    'title'    => 'NPL ' . esc_html($info['season'] ?? '2026') . ': ' . $m['team1'] . ' v ' . $m['team2'],
+                    'date'     => $m['date'] ?? '',
+                    'time'     => $m['time'] ?? '',
+                    'team1'    => $m['team1'],
+                    'team2'    => $m['team2'],
+                    'result'   => $m['result_text'] ?? '',
+                    'type'     => 'match'
+                );
+            }
+        }
+
+        ob_start();
+        ?>
+        <style>
+        :root { --npl-green: #16a34a; --npl-green-dark: #15803d; --npl-blue: #1e3a8a; --npl-blue-dark: #0f172a; --npl-red: #dc2626; --npl-red-dark: #991b1b; --npl-bg: #f1f5f9; --npl-white: #ffffff; --npl-text: #1e293b; --npl-text-light: #64748b; --npl-border: #e2e8f0; }
+        .npl-news-wrap { max-width: 100%; margin: 0 auto; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif; background: var(--npl-bg); color: var(--npl-text); overflow-x: hidden; }
+        .npl-news-wrap * { box-sizing: border-box; }
+        .npl-news-header { background: linear-gradient(135deg, var(--npl-blue-dark) 0%, var(--npl-blue) 100%); padding: 0 40px; height: 70px; display: flex; align-items: center; justify-content: space-between; position: sticky; top: 0; z-index: 1000; box-shadow: 0 2px 12px rgba(0,0,0,0.15); }
+        .npl-news-header-logo { display: flex; align-items: center; gap: 12px; color: white; font-weight: 800; font-size: 20px; }
+        .npl-news-header-logo img { height: 44px; }
+        .npl-news-nav { display: flex; gap: 28px; }
+        .npl-news-nav a { color: rgba(255,255,255,0.9); text-decoration: none; font-size: 14px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; transition: all 0.3s; padding: 8px 0; position: relative; }
+        .npl-news-nav a:hover, .npl-news-nav a.active { color: var(--npl-green); }
+        .npl-news-nav a.active::after { content: ''; position: absolute; bottom: 0; left: 0; right: 0; height: 3px; background: var(--npl-green); border-radius: 2px; }
+        .npl-news-page-title { background: linear-gradient(135deg, var(--npl-blue) 0%, var(--npl-blue-dark) 100%); color: white; padding: 40px; font-size: 42px; font-weight: 900; margin: 0; }
+        .npl-news-filters { padding: 24px 40px; display: flex; gap: 12px; align-items: center; flex-wrap: wrap; background: var(--npl-bg); }
+        .npl-filter-btn { background: white; border: 1px solid var(--npl-border); padding: 10px 18px; border-radius: 8px; cursor: pointer; font-size: 13px; font-weight: 600; color: var(--npl-text); display: flex; align-items: center; gap: 8px; transition: all 0.3s; }
+        .npl-filter-btn:hover { border-color: var(--npl-blue); transform: translateY(-2px); box-shadow: 0 4px 8px rgba(0,0,0,0.1); }
+        .npl-filter-btn i { color: var(--npl-blue); font-size: 12px; }
+        .npl-refresh-btn { background: var(--npl-green); color: white; border: none; width: 40px; height: 40px; border-radius: 50%; cursor: pointer; display: flex; align-items: center; justify-content: center; transition: all 0.3s; font-size: 16px; }
+        .npl-refresh-btn:hover { background: var(--npl-blue); transform: rotate(180deg); }
+        .npl-news-featured { padding: 0 40px 30px; }
+        .npl-news-featured-card { background: white; border-radius: 16px; overflow: hidden; box-shadow: 0 4px 12px rgba(0,0,0,0.08); display: grid; grid-template-columns: 1fr 1.5fr; min-height: 380px; }
+        .npl-news-featured-content { padding: 40px; display: flex; flex-direction: column; justify-content: center; background: linear-gradient(135deg, rgba(30,58,138,0.03) 0%, rgba(220,38,38,0.03) 100%); }
+        .npl-news-category-tag { display: inline-block; background: linear-gradient(135deg, var(--npl-red), var(--npl-blue)); color: white; padding: 6px 14px; border-radius: 6px; font-size: 11px; font-weight: 800; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 16px; width: fit-content; }
+        .npl-news-category-tag.press { background: linear-gradient(135deg, var(--npl-red), var(--npl-red-dark)); }
+        .npl-news-category-tag.match { background: linear-gradient(135deg, var(--npl-green), var(--npl-green-dark)); }
+        .npl-news-featured-title { font-size: 28px; font-weight: 800; color: var(--npl-text); margin: 0 0 12px; line-height: 1.3; }
+        .npl-news-featured-meta { color: var(--npl-text-light); font-size: 13px; }
+        .npl-news-featured-image { position: relative; overflow: hidden; background: linear-gradient(135deg, var(--npl-blue), var(--npl-red)); display: flex; align-items: center; justify-content: center; }
+        .npl-news-featured-image img { width: 100%; height: 100%; object-fit: cover; }
+        .npl-news-featured-placeholder { font-size: 120px; opacity: 0.3; }
+        .npl-news-trade-info { position: absolute; bottom: 20px; left: 20px; right: 20px; background: rgba(255,255,255,0.95); padding: 20px; border-radius: 12px; backdrop-filter: blur(10px); display: flex; justify-content: space-around; align-items: center; }
+        .npl-trade-team { text-align: center; }
+        .npl-trade-team-name { font-weight: 700; font-size: 12px; color: var(--npl-text); margin-bottom: 4px; }
+        .npl-trade-amount { font-size: 18px; font-weight: 900; color: var(--npl-red); }
+        .npl-trade-arrow { font-size: 24px; color: var(--npl-green); }
+        .npl-news-grid-container { padding: 0 40px 40px; }
+        .npl-news-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 20px; }
+        .npl-news-card { background: white; border-radius: 12px; overflow: hidden; box-shadow: 0 2px 8px rgba(0,0,0,0.06); transition: all 0.3s; cursor: pointer; }
+        .npl-news-card:hover { transform: translateY(-4px); box-shadow: 0 8px 20px rgba(0,0,0,0.12); }
+        .npl-news-card-image { height: 180px; position: relative; overflow: hidden; background: linear-gradient(135deg, var(--npl-blue), var(--npl-red)); display: flex; align-items: center; justify-content: center; background-size: cover; background-position: center; }
+        .npl-news-card-image img { width: 100%; height: 100%; object-fit: cover; transition: transform 0.3s; }
+        .npl-news-card:hover .npl-news-card-image img { transform: scale(1.05); }
+        .npl-news-card-category { position: absolute; top: 12px; left: 12px; background: var(--npl-blue); color: white; padding: 4px 10px; border-radius: 4px; font-size: 10px; font-weight: 700; text-transform: uppercase; }
+        .npl-news-card-category.press { background: var(--npl-red); }
+        .npl-news-card-category.match { background: var(--npl-green); }
+        .npl-news-card-content { padding: 16px; }
+        .npl-news-card-title { font-size: 14px; font-weight: 700; color: var(--npl-text); margin: 0 0 8px; line-height: 1.4; min-height: 40px; }
+        .npl-news-card-date { color: var(--npl-text-light); font-size: 12px; }
+        .npl-news-load-more { text-align: center; padding: 40px; }
+        .npl-load-more-btn { background: linear-gradient(135deg, var(--npl-blue), var(--npl-red)); color: white; border: none; padding: 12px 32px; border-radius: 30px; font-size: 14px; font-weight: 700; cursor: pointer; transition: all 0.3s; box-shadow: 0 4px 12px rgba(0,0,0,0.15); }
+        .npl-load-more-btn:hover { transform: translateY(-2px); box-shadow: 0 6px 16px rgba(0,0,0,0.2); }
+        .npl-news-footer { background: linear-gradient(135deg, var(--npl-blue-dark) 0%, var(--npl-blue) 100%); color: white; padding: 50px 40px 20px; margin-top: 60px; }
+        .npl-news-footer-inner { max-width: 1400px; margin: 0 auto; }
+        .npl-news-footer-top { display: flex; justify-content: space-between; align-items: center; padding-bottom: 30px; border-bottom: 1px solid rgba(255,255,255,0.1); margin-bottom: 40px; }
+        .npl-news-social { display: flex; gap: 16px; }
+        .npl-news-social a { color: white; font-size: 20px; transition: all 0.3s; }
+        .npl-news-social a:hover { color: var(--npl-green); transform: translateY(-3px); }
+        .npl-news-footer-logo { font-size: 24px; font-weight: 900; display: flex; align-items: center; gap: 10px; }
+        .npl-news-app-buttons { display: flex; gap: 12px; }
+        .npl-app-btn { background: white; color: var(--npl-text); padding: 8px 16px; border-radius: 8px; display: flex; align-items: center; gap: 8px; text-decoration: none; font-size: 12px; font-weight: 600; transition: all 0.3s; }
+        .npl-app-btn:hover { transform: translateY(-2px); box-shadow: 0 4px 12px rgba(0,0,0,0.2); }
+        .npl-news-footer-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 40px; margin-bottom: 40px; }
+        .npl-news-footer-col h4 { font-size: 14px; font-weight: 800; margin: 0 0 20px; color: var(--npl-green); text-transform: uppercase; letter-spacing: 0.5px; }
+        .npl-news-footer-col a { display: block; color: rgba(255,255,255,0.7); text-decoration: none; font-size: 13px; margin-bottom: 10px; transition: all 0.3s; }
+        .npl-news-footer-col a:hover { color: white; padding-left: 4px; }
+        .npl-news-footer-bottom { display: flex; justify-content: space-between; align-items: center; padding-top: 20px; border-top: 1px solid rgba(255,255,255,0.1); font-size: 12px; color: rgba(255,255,255,0.5); }
+        .npl-cookie-notice { position: fixed; bottom: 0; left: 0; right: 0; background: white; padding: 20px 40px; box-shadow: 0 -4px 12px rgba(0,0,0,0.1); z-index: 9999; display: flex; justify-content: space-between; align-items: center; gap: 20px; border-top: 3px solid var(--npl-green); }
+        .npl-cookie-content p { font-size: 13px; color: var(--npl-text); margin: 0 0 4px; }
+        .npl-cookie-content a { color: var(--npl-blue); text-decoration: underline; }
+        .npl-cookie-buttons { display: flex; gap: 10px; }
+        .npl-cookie-btn { padding: 8px 20px; border-radius: 6px; border: none; cursor: pointer; font-weight: 600; font-size: 13px; transition: all 0.3s; }
+        .npl-cookie-btn.accept { background: var(--npl-green); color: white; }
+        .npl-cookie-btn.essential { background: var(--npl-blue); color: white; }
+        .npl-cookie-btn.manage { background: var(--npl-border); color: var(--npl-text); }
+        .npl-cookie-btn:hover { transform: translateY(-2px); }
+        @media (max-width: 1200px) { .npl-news-grid { grid-template-columns: repeat(3, 1fr); } }
+        @media (max-width: 968px) { .npl-news-featured-card { grid-template-columns: 1fr; } .npl-news-grid { grid-template-columns: repeat(2, 1fr); } .npl-news-footer-grid { grid-template-columns: repeat(2, 1fr); } .npl-news-nav { display: none; } }
+        @media (max-width: 640px) { .npl-news-header { padding: 0 20px; } .npl-news-page-title { padding: 30px 20px; font-size: 32px; } .npl-news-filters { padding: 20px; } .npl-news-featured { padding: 0 20px 20px; } .npl-news-grid-container { padding: 0 20px 20px; } .npl-news-grid { grid-template-columns: 1fr; } .npl-news-footer { padding: 40px 20px 20px; } .npl-cookie-notice { flex-direction: column; padding: 20px; } }
+        </style>
+
+        <div class="npl-news-wrap">
+            <header class="npl-news-header">
+                <div class="npl-news-header-logo">
+                    <?php if (!empty($info['logo'])) : ?><img src="<?php echo esc_url($info['logo']); ?>" alt="NPL"><?php else : ?><span style="font-size: 32px;">🏏</span><?php endif; ?>
+                    <span>TATA NPL</span>
+                </div>
+                <nav class="npl-news-nav">
+                    <a href="#" class="active">News</a>
+                    <a href="#">Videos</a>
+                    <a href="#">Photos</a>
+                    <a href="#">Matches</a>
+                    <a href="#">Points Table</a>
+                    <a href="#">Teams</a>
+                    <a href="#">More</a>
+                </nav>
+            </header>
+
+            <h1 class="npl-news-page-title">All News</h1>
+
+            <div class="npl-news-filters">
+                <button class="npl-filter-btn" data-filter="all">All Categories <i>▼</i></button>
+                <button class="npl-filter-btn" data-filter="season">All Seasons <i>▼</i></button>
+                <button class="npl-filter-btn" data-filter="team">All Teams <i>▼</i></button>
+                <button class="npl-refresh-btn" onclick="location.reload()">↻</button>
+            </div>
+
+            <div class="npl-news-featured">
+                <div class="npl-news-featured-card">
+                    <div class="npl-news-featured-content">
+                        <?php 
+                        $first_news = $news_items[0] ?? null;
+                        if ($first_news) : 
+                            $cat_class = ($first_news['type'] === 'match') ? 'match' : 'press';
+                        ?>
+                        <span class="npl-news-category-tag <?php echo $cat_class; ?>"><?php echo esc_html($first_news['category']); ?></span>
+                        <h2 class="npl-news-featured-title"><?php echo esc_html($first_news['title']); ?></h2>
+                        <div class="npl-news-featured-meta"><?php echo esc_html(date('D, j M Y, g:i A', strtotime($first_news['date'] . ' ' . $first_news['time']))); ?></div>
+                        <?php if (!empty($first_news['excerpt'])) : ?>
+                            <p style="margin-top:16px; color:var(--npl-text-light); line-height:1.6;"><?php echo esc_html(wp_trim_words($first_news['excerpt'], 20)); ?></p>
+                        <?php endif; ?>
+                        <?php else : ?>
+                        <span class="npl-news-category-tag press">Press Releases</span>
+                        <h2 class="npl-news-featured-title">No News Available Yet</h2>
+                        <div class="npl-news-featured-meta">Check back later for updates.</div>
+                        <?php endif; ?>
+                    </div>
+                    <div class="npl-news-featured-image">
+                        <?php if ($first_news && !empty($first_news['image'])) : ?>
+                            <img src="<?php echo esc_url($first_news['image']); ?>" alt="<?php echo esc_attr($first_news['title']); ?>">
+                        <?php else : ?>
+                            <div class="npl-news-featured-placeholder">🏏</div>
+                        <?php endif; ?>
+                        <?php if ($first_news && !empty($first_news['team1']) && !empty($first_news['team2'])) : ?>
+                        <div class="npl-news-trade-info">
+                            <div class="npl-trade-team"><div class="npl-trade-team-name"><?php echo esc_html($first_news['team1']); ?></div></div>
+                            <div class="npl-trade-arrow">VS</div>
+                            <div class="npl-trade-team"><div class="npl-trade-team-name"><?php echo esc_html($first_news['team2']); ?></div></div>
+                        </div>
+                        <?php endif; ?>
+                    </div>
+                </div>
+            </div>
+
+            <div class="npl-news-grid-container">
+                <div class="npl-news-grid" id="nplNewsGrid">
+                    <?php
+                    $display_items = array_slice($news_items, 1, 16);
+                    if (empty($display_items)) :
+                    ?>
+                    <div style="grid-column: 1/-1; text-align:center; padding:40px; color:var(--npl-text-light);"><p>No additional news articles to display.</p></div>
+                    <?php else : 
+                        foreach ($display_items as $item) :
+                            $cat_class    = ($item['type'] === 'match') ? 'match' : 'press';
+                            $team1_color  = !empty($item['team1']) && isset($teams[$item['team1']]['color']) ? $teams[$item['team1']]['color'] : '#1e3a8a';
+                            $team2_color  = !empty($item['team2']) && isset($teams[$item['team2']]['color']) ? $teams[$item['team2']]['color'] : '#dc2626';
+                    ?>
+                    <article class="npl-news-card" data-category="<?php echo esc_attr($item['category']); ?>" data-type="<?php echo esc_attr($item['type']); ?>">
+                        <div class="npl-news-card-image" style="<?php echo !empty($item['image']) ? 'background-image:url(\''.esc_url($item['image']).'\');' : 'background: linear-gradient(135deg, '.esc_attr($team1_color).', '.esc_attr($team2_color).');'; ?>">
+                            <?php if (empty($item['image'])) : ?><span style="font-size: 60px; opacity: 0.3;">📰</span><?php endif; ?>
+                            <span class="npl-news-card-category <?php echo $cat_class; ?>"><?php echo esc_html($item['category']); ?></span>
+                        </div>
+                        <div class="npl-news-card-content">
+                            <h3 class="npl-news-card-title"><?php echo esc_html($item['title']); ?></h3>
+                            <div class="npl-news-card-date"><?php echo esc_html(date('D, j M Y', strtotime($item['date']))); ?></div>
+                        </div>
+                    </article>
+                    <?php 
+                        endforeach; 
+                    endif; 
+                    ?>
+                </div>
+            </div>
+
+            <div class="npl-news-load-more">
+                <button class="npl-load-more-btn" id="nplLoadMore">More</button>
+            </div>
+
+            <footer class="npl-news-footer">
+                <div class="npl-news-footer-inner">
+                    <div class="npl-news-footer-top">
+                        <div class="npl-news-social"><a href="#"><i>f</i></a><a href="#"><i>𝕏</i></a><a href="#"><i>📷</i></a></div>
+                        <div class="npl-news-footer-logo">
+                            <?php if (!empty($info['logo'])) : ?><img src="<?php echo esc_url($info['logo']); ?>" style="height: 40px;" alt="NPL"><?php else : ?><span>🏏</span><?php endif; ?>
+                            <span>TATA NPL</span>
+                        </div>
+                        <div class="npl-news-app-buttons">
+                            <a href="#" class="npl-app-btn"><span>▶</span><div><div style="font-size: 9px;">GET IT ON</div><div>Google Play</div></div></a>
+                            <a href="#" class="npl-app-btn"><span></span><div><div style="font-size: 9px;">Download on the</div><div>App Store</div></div></a>
+                        </div>
+                    </div>
+                    <div class="npl-news-footer-grid">
+                        <div class="npl-news-footer-col"><h4>About</h4><a href="#">Governing Council</a><a href="#">Anti Corruption</a><a href="#">Anti Doping</a></div>
+                        <div class="npl-news-footer-col"><h4>Guidelines</h4><a href="#">Match Playing Conditions</a><a href="#">Code of Conduct</a><a href="#">Terms & Conditions</a></div>
+                        <div class="npl-news-footer-col"><h4>Teams</h4><?php foreach (array_slice(array_keys($teams), 0, 8) as $tn) : ?><a href="#"><?php echo esc_html($tn); ?></a><?php endforeach; ?></div>
+                        <div class="npl-news-footer-col"><h4>Contact Us</h4><p style="color: rgba(255,255,255,0.7); font-size: 13px; line-height: 1.6; margin-bottom: 12px;">NPL Office, Kathmandu, Nepal</p><p style="color: rgba(255,255,255,0.7); font-size: 13px;">T: +977-1-XXXXXXX</p></div>
+                    </div>
+                    <div class="npl-news-footer-bottom"><div>© NPL <?php echo esc_html($info['season'] ?? '2026'); ?>. All rights reserved. | <a href="#" style="color: rgba(255,255,255,0.5);">Privacy Policy</a></div></div>
+                </div>
+            </footer>
+
+            <div class="npl-cookie-notice" id="nplCookieNotice">
+                <div class="npl-cookie-content">
+                    <p><strong>NPL uses cookies</strong></p>
+                    <p>We use cookies for technical purposes and, with your consent, for other purposes as specified in the <a href="#">Cookie Policy</a>.</p>
+                </div>
+                <div class="npl-cookie-buttons">
+                    <button class="npl-cookie-btn accept" onclick="nplAcceptCookies()">Accept All</button>
+                    <button class="npl-cookie-btn essential" onclick="nplEssentialCookies()">Essential Only</button>
+                </div>
+            </div>
+        </div>
+
+        <script>
+        function nplHideCookieNotice() { const notice = document.getElementById('nplCookieNotice'); if (notice) notice.style.display = 'none'; }
+        function nplAcceptCookies() { try { localStorage.setItem('npl_cookies', 'all'); } catch (e) {} nplHideCookieNotice(); }
+        function nplEssentialCookies() { try { localStorage.setItem('npl_cookies', 'essential'); } catch (e) {} nplHideCookieNotice(); }
+        try { if (localStorage.getItem('npl_cookies')) nplHideCookieNotice(); } catch (e) {}
+        
+        document.querySelectorAll('.npl-filter-btn').forEach(btn => {
+            btn.addEventListener('click', function() {
+                const filter = this.dataset.filter;
+                const cards = document.querySelectorAll('.npl-news-card');
+                cards.forEach(card => {
+                    const category = (card.dataset.category || '').toLowerCase();
+                    card.style.display = (filter === 'all' || filter === 'season' || filter === 'team' || category.includes(filter)) ? '' : 'none';
+                });
+            });
+        });
+        const loadMoreButton = document.getElementById('nplLoadMore');
+        if (loadMoreButton) {
+            loadMoreButton.addEventListener('click', function() {
+                this.disabled = true;
+                this.textContent = 'All news items shown';
+            });
+        }
+        </script>
+        <?php
+        return ob_get_clean();
+    }
+}
+add_shortcode('setopress_npl_news', 'sc_npl_news_shortcode');
